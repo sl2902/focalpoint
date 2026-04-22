@@ -17,9 +17,13 @@ pushing severity-graded alerts rather than waiting to be queried.
 ## Stack
 - Backend: Python 3.11, FastAPI, Pydantic v2, pytest, Redis, slowapi
 - Mobile: React Native, Expo SDK 52, Expo SQLite
-- AI: Gemma 4 (E2B/E4B on-device, 26B via backend)
-- Data: ACLED API, GDELT 2.0, CPJ API, RSF Index
-- Maps: Mapbox
+- AI: Gemma 4 via Gemini API (GOOGLE_AI_STUDIO_API_KEY) — model IDs:
+       gemma-4-26b-a4b-it (backend), gemma-4-31b-it (backend),
+       E2B/E4B weights downloaded for on-device use
+- Data: ACLED API (OAuth2), GDELT 2.0 (no auth), CPJ local CSV at
+         backend/data/cpj_incidents.csv, RSF hardcoded dict at
+         backend/data/rsf_scores.py (180 countries, update annually)
+- Maps: MapLibre React Native + OpenStreetMap demo tiles (no key required)
 - Deployment: Backend on Google Cloud Run, Expo for mobile
 
 ## Project Structure

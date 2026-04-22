@@ -1,0 +1,41 @@
+[project]
+name = "focalpoint"
+version = "0.1.0"
+requires-python = "==3.11.*"
+dependencies = [
+    "fastapi",
+    "pydantic>=2.0",
+    "pydantic-settings",
+    "httpx",
+    "redis",
+    "slowapi",
+    "uvicorn[standard]",
+    "loguru",
+    "google-genai",
+    "pandas",
+    "aiofiles",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["backend/tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

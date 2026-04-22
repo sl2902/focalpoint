@@ -1,1 +1,14 @@
+# Secrets
 .env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment (managed by uv)
+.venv/
+
+# Raw data source files (derived artifacts — canonical form is rsf_scores.py)
+backend/data/rsf_raw.csv

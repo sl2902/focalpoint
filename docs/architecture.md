@@ -9,7 +9,7 @@ The mobile app never communicates with data APIs directly.
 ```
 [ACLED API] ──┐
 [GDELT API] ──┤──► [Ingestion Layer] ──► [Redis Cache] ──► [Processors]
-[CPJ API]  ──┤                                               │
+[CPJ local]──┤                                               │
 [RSF Index]──┘                                               ▼
                                                      [Gemma 4 — 26B]
                                                              │
@@ -113,7 +113,7 @@ On-device Gemma 4 (E2B/E4B):
 
 Screens:
 - Feed: proactive severity-graded alert stream
-- Map: Mapbox map with incident markers
+- Map: MapLibre React Native map with incident markers (OpenStreetMap tiles, no key)
 - AlertDetail: full alert with source citations
 - Explore: browse any region outside watch zone
 - Settings: watch zone, language, notification preferences,

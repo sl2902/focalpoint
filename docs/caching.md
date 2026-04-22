@@ -23,8 +23,11 @@ All TTLs are aligned to the natural update frequency of each source.
 |--------|-----------------|-----|-----------|
 | GDELT | gdelt:{query_hash}:{timespan} | 900s | Matches GDELT 15min update cadence |
 | ACLED | acled:{country}:{page} | 3600s | ACLED updates continuously but not faster than hourly for most regions |
-| CPJ | cpj:{country} | 86400s | Historical data — changes rarely |
-| RSF | rsf:{country} | 86400s | Annual index — effectively static |
+
+Note: CPJ data is loaded from a local static CSV at startup and
+held in memory. No Redis caching needed for CPJ.
+Note: RSF data is a hardcoded Python dict in backend/data/rsf_scores.py.
+No loading, no caching, no Redis entry needed.
 
 **Cache miss behaviour:**
 On cache miss, connector fetches fresh from API, validates with Pydantic,
