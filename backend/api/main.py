@@ -32,13 +32,14 @@ from backend.security.rate_limiter import limiter
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # --- startup ---
     try:
-        redis_client: aioredis.Redis | None = aioredis.from_url(
+        redis_client: aioredis.Redis = aioredis.from_url(
             settings.REDIS_URL, decode_responses=True
         )
+        await redis_client.ping()
         app.state.redis = redis_client
-        logger.info("Redis client initialised")
-    except Exception as exc:  # pragma: no cover
-        logger.warning(f"Redis init failed — running without cache: {exc}")
+        logger.info("Redis client initialised and reachable")
+    except Exception as exc:
+        logger.warning(f"Redis unavailable — running without cache: {exc}")
         app.state.redis = None
 
     try:
