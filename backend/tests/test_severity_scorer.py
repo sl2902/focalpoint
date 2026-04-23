@@ -20,9 +20,9 @@ from datetime import date
 
 import pytest
 
-from backend.ingestion.acled_connector import AcledEvent
 from backend.ingestion.cpj_connector import CountryStats
 from backend.ingestion.gdelt_connector import GdeltArticle
+from backend.ingestion.gdeltcloud_connector import GdeltCloudEvent
 from backend.alerts.severity_scorer import (
     SeverityLevel,
     SeverityResult,
@@ -45,9 +45,9 @@ _EVENT_DATE = date(2026, 4, 20)
 # ---------------------------------------------------------------------------
 
 
-def make_event(event_type: str, fatalities: int = 0) -> AcledEvent:
-    return AcledEvent(
-        event_id_cnty="TEST001",
+def make_event(event_type: str, fatalities: int = 0) -> GdeltCloudEvent:
+    return GdeltCloudEvent(
+        id="TEST001",
         event_date="2026-04-20",
         event_type=event_type,
         actor1="Test Actor A",
@@ -102,6 +102,10 @@ class TestFatalityScore:
     def test_empty_events(self) -> None:
         assert _score_fatalities([], _EVENT_DATE) == 0.0
 
+    def test_none_fatalities_treated_as_zero(self) -> None:
+        event = GdeltCloudEvent(id="X", event_date="2026-04-20", fatalities=None)
+        assert _score_fatalities([event], _EVENT_DATE) == 0.0
+
 
 class TestEventTypeScore:
     def test_explosions(self) -> None:
@@ -125,6 +129,10 @@ class TestEventTypeScore:
     def test_unknown_type_gets_default(self) -> None:
         assert _score_event_type([make_event("Unknown type XYZ")]) == 5.0
 
+    def test_none_event_type_gets_default(self) -> None:
+        event = GdeltCloudEvent(id="X", event_date="2026-04-20", event_type=None)
+        assert _score_event_type([event]) == 5.0
+
     def test_takes_max_across_events(self) -> None:
         events = [make_event("Protests"), make_event("Battles")]
         assert _score_event_type(events) == 22.0
@@ -137,6 +145,19 @@ class TestEventTypeScore:
 
     def test_empty_events(self) -> None:
         assert _score_event_type([]) == 0.0
+
+    # GDELT Cloud native event types
+    def test_gdelt_air_drone_strike(self) -> None:
+        assert _score_event_type([make_event("Air/Drone Strike")]) == 25.0
+
+    def test_gdelt_shelling(self) -> None:
+        assert _score_event_type([make_event("Shelling/Artillery/Missiles Fired")]) == 25.0
+
+    def test_gdelt_armed_clash(self) -> None:
+        assert _score_event_type([make_event("Armed Clash")]) == 22.0
+
+    def test_gdelt_political_violence(self) -> None:
+        assert _score_event_type([make_event("Political Violence")]) == 18.0
 
 
 class TestGdeltToneScore:
@@ -250,10 +271,7 @@ class TestConfidence:
         assert conf == pytest.approx(0.9)
 
     def test_confidence_never_below_0_1(self) -> None:
-        # no events, no articles, no CPJ, zero RSF
         cpj = make_cpj(0.0, total=0)
-        # deliberately trigger all penalties except no-events + no-articles
-        # which already gives INSUFFICIENT_DATA path, so test with articles only
         conf = _compute_confidence([], [make_article()], cpj, 0.0)
         assert conf >= 0.1
 
@@ -268,7 +286,7 @@ class TestGreenLevel:
         # Protests + 0 fatalities + tone=+2 + CPJ 0/yr + RSF 85
         # = 0 + 5 + 0 + 0 + 0 = 5 → GREEN
         result = score_severity(
-            acled_events=[make_event("Protests", 0)],
+            conflict_events=[make_event("Protests", 0)],
             gdelt_articles=[make_article()],
             cpj_stats=make_cpj(0.0, total=0),
             rsf_press_freedom=85.0,
@@ -287,7 +305,7 @@ class TestAmberLevel:
         # Riots + 5 fatalities + tone=-3 + CPJ 0/yr + RSF 85
         # = 16 + 10 + 5 + 0 + 0 = 31 → AMBER
         result = score_severity(
-            acled_events=[make_event("Riots", 5)],
+            conflict_events=[make_event("Riots", 5)],
             gdelt_articles=[make_article()],
             cpj_stats=make_cpj(0.0, total=0),
             rsf_press_freedom=85.0,
@@ -303,7 +321,7 @@ class TestRedLevel:
         # Battles + 12 fatalities + tone=-7 + CPJ 1.5/yr + RSF 40
         # = 24 + 22 + 10 + 6 + 7 = 69 → RED
         result = score_severity(
-            acled_events=[make_event("Battles", 12)],
+            conflict_events=[make_event("Battles", 12)],
             gdelt_articles=[make_article()],
             cpj_stats=make_cpj(1.5, total=5),
             rsf_press_freedom=40.0,
@@ -319,7 +337,7 @@ class TestCriticalLevel:
         # Explosions + 30 fatalities + tone=-18 + CPJ 8/yr + RSF 15
         # = 30 + 25 + 20 + 15 + 10 = 100 → CRITICAL
         result = score_severity(
-            acled_events=[make_event("Explosions/Remote violence", 30)],
+            conflict_events=[make_event("Explosions/Remote violence", 30)],
             gdelt_articles=[make_article()],
             cpj_stats=make_cpj(8.0, total=50),
             rsf_press_freedom=15.0,
@@ -340,9 +358,9 @@ class TestCriticalLevel:
 
 
 class TestInsufficientData:
-    def test_no_acled_and_no_gdelt_returns_insufficient(self) -> None:
+    def test_no_events_and_no_gdelt_returns_insufficient(self) -> None:
         result = score_severity(
-            acled_events=[],
+            conflict_events=[],
             gdelt_articles=[],
             cpj_stats=make_cpj(5.0, total=20),
             rsf_press_freedom=20.0,
@@ -363,9 +381,9 @@ class TestInsufficientData:
 
 
 class TestPartialData:
-    def test_acled_only_no_gdelt_still_scores(self) -> None:
+    def test_conflict_events_only_no_gdelt_still_scores(self) -> None:
         result = score_severity(
-            acled_events=[make_event("Battles", 5)],
+            conflict_events=[make_event("Battles", 5)],
             gdelt_articles=[],
             cpj_stats=make_cpj(0.0, total=0),
             rsf_press_freedom=85.0,
@@ -373,9 +391,9 @@ class TestPartialData:
         assert result.level != SeverityLevel.INSUFFICIENT_DATA
         assert result.component_scores["gdelt_tone"] == 0.0
 
-    def test_gdelt_only_no_acled_still_scores(self) -> None:
+    def test_gdelt_only_no_conflict_events_still_scores(self) -> None:
         result = score_severity(
-            acled_events=[],
+            conflict_events=[],
             gdelt_articles=[make_article()],
             cpj_stats=make_cpj(0.0, total=0),
             rsf_press_freedom=85.0,
@@ -385,9 +403,9 @@ class TestPartialData:
         assert result.component_scores["fatalities"] == 0.0
         assert result.component_scores["gdelt_tone"] == 15.0
 
-    def test_acled_only_confidence_reduced(self) -> None:
+    def test_conflict_events_only_confidence_reduced(self) -> None:
         result = score_severity(
-            acled_events=[make_event("Battles"), make_event("Riots"), make_event("Protests")],
+            conflict_events=[make_event("Battles"), make_event("Riots"), make_event("Protests")],
             gdelt_articles=[],
             cpj_stats=make_cpj(3.0, total=10),
             rsf_press_freedom=50.0,
@@ -396,7 +414,7 @@ class TestPartialData:
 
     def test_gdelt_only_confidence_reduced(self) -> None:
         result = score_severity(
-            acled_events=[],
+            conflict_events=[],
             gdelt_articles=[make_article()],
             cpj_stats=make_cpj(3.0, total=10),
             rsf_press_freedom=50.0,
@@ -439,6 +457,15 @@ class TestResultStructure:
         )
         assert result.level.value in result.reasoning
 
+    def test_reasoning_mentions_gdelt_cloud(self) -> None:
+        result = score_severity(
+            [make_event("Battles", 5)],
+            [make_article()],
+            make_cpj(1.0, total=5),
+            50.0,
+        )
+        assert "GDELT Cloud" in result.reasoning
+
     def test_result_is_pydantic_model(self) -> None:
         result = score_severity(
             [make_event("Protests")],
@@ -468,14 +495,13 @@ class TestResultStructure:
 
 class TestRecencyDecay:
     def test_today_event_has_full_weight(self) -> None:
-        # event_date == reference → days=0 → weight = 2^0 = 1.0 → 4 fat → 16 pts
         event = make_event("Battles", 4)  # event_date = 2026-04-20
         assert _score_fatalities([event], _EVENT_DATE) == 16.0
 
     def test_seven_day_old_event_has_half_weight(self) -> None:
         # 7 days before reference → weight = 0.5 → 10 fat × 0.5 = 5.0 → bucket 4-10 → 16 pts
-        old_event = AcledEvent(
-            event_id_cnty="OLD001",
+        old_event = GdeltCloudEvent(
+            id="OLD001",
             event_date="2026-04-13",   # 7 days before _EVENT_DATE
             event_type="Battles",
             actor1="Actor",
@@ -492,8 +518,8 @@ class TestRecencyDecay:
         # 26 fat today → weight=1.0 → weighted=26 → 30 pts (max)
         # 26 fat 30 days ago → weight≈0.051 → weighted≈1.33 → 8 pts (lowest)
         recent = make_event("Battles", 26)  # event_date = _EVENT_DATE
-        old_event = AcledEvent(
-            event_id_cnty="OLD002",
+        old_event = GdeltCloudEvent(
+            id="OLD002",
             event_date="2026-03-21",   # 30 days before _EVENT_DATE
             event_type="Battles",
             actor1="Actor",
@@ -510,40 +536,27 @@ class TestRecencyDecay:
         assert recent_score > old_score
 
     def test_future_date_treated_as_today(self) -> None:
-        # event_date after reference → days clamped to 0 → weight = 1.0
-        future_event = AcledEvent(
-            event_id_cnty="FUT001",
+        future_event = GdeltCloudEvent(
+            id="FUT001",
             event_date="2026-05-01",   # 11 days after _EVENT_DATE
             event_type="Battles",
-            actor1="Actor",
-            country="Palestine",
-            location="Gaza",
-            latitude=31.5,
-            longitude=34.47,
             fatalities=4,
         )
         assert _score_fatalities([future_event], _EVENT_DATE) == 16.0
 
     def test_unparseable_date_falls_back_to_weight_one(self) -> None:
-        # Non-ISO date string → ValueError in fromisoformat → weight = 1.0
-        bad_date_event = AcledEvent(
-            event_id_cnty="BAD001",
+        bad_date_event = GdeltCloudEvent(
+            id="BAD001",
             event_date="April 20 2026",   # not ISO format
             event_type="Battles",
-            actor1="Actor",
-            country="Palestine",
-            location="Gaza",
-            latitude=31.5,
-            longitude=34.47,
             fatalities=4,
         )
         assert _score_fatalities([bad_date_event], _EVENT_DATE) == 16.0
 
     def test_score_severity_threads_reference_date_to_fatality_scorer(self) -> None:
-        # Same event, same raw fatalities; distant reference_date → lower fatality score.
         event = make_event("Battles", 26)  # event_date = 2026-04-20
         cpj = make_cpj(0.0, total=0)
-        articles = [make_article()]  # tone=0 → 0 tone pts
+        articles = [make_article()]
 
         result_same_day = score_severity(
             [event], articles, cpj, 75.0,

@@ -27,9 +27,9 @@ from typing import Final
 
 from pydantic import BaseModel, Field
 
-from backend.ingestion.acled_connector import AcledEvent
 from backend.ingestion.cpj_connector import CountryStats
 from backend.ingestion.gdelt_connector import GdeltArticle
+from backend.ingestion.gdeltcloud_connector import GdeltCloudEvent
 
 # ---------------------------------------------------------------------------
 # Output models
@@ -57,7 +57,18 @@ class SeverityResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 # Event type weights — battles explicitly higher than protests per spec.
+# Covers both GDELT Cloud CAMEO-based event types and legacy ACLED strings.
+# Unrecognised event_type values fall back to _DEFAULT_EVENT_WEIGHT.
 _EVENT_TYPE_WEIGHTS: Final[dict[str, float]] = {
+    # GDELT Cloud event types
+    "Air/Drone Strike": 25.0,
+    "Shelling/Artillery/Missiles Fired": 25.0,
+    "Armed Clash": 22.0,
+    "Political Violence": 18.0,
+    "Attack": 18.0,
+    "Mob Violence": 10.0,
+    "Demonstration": 5.0,
+    # ACLED-compatible strings (kept for cross-source consistency)
     "Explosions/Remote violence": 25.0,
     "Battles": 22.0,
     "Violence against civilians": 18.0,
@@ -104,18 +115,21 @@ _LEVEL_THRESHOLDS: Final[list[tuple[float, SeverityLevel]]] = [
 
 
 def _score_fatalities(
-    events: list[AcledEvent],
+    events: list[GdeltCloudEvent],
     reference_date: date | None = None,
 ) -> float:
     """0–30 pts.  Escalates with recency-weighted fatality count (7-day half-life).
 
     Each event's fatalities are multiplied by its decay weight before summing,
     so a battle from 30 days ago contributes ~5% of its raw count.
+    GdeltCloudEvent.fatalities is Optional[int] — None is treated as 0.
     """
     if not events:
         return 0.0
     ref = reference_date or date.today()
-    weighted = sum(e.fatalities * _recency_weight(e.event_date, ref) for e in events)
+    weighted = sum(
+        (e.fatalities or 0) * _recency_weight(e.event_date, ref) for e in events
+    )
     if weighted == 0.0:
         return 0.0
     if weighted <= 3.0:
@@ -127,12 +141,16 @@ def _score_fatalities(
     return 30.0
 
 
-def _score_event_type(events: list[AcledEvent]) -> float:
-    """0–25 pts.  Highest event-type weight among all events in the window."""
+def _score_event_type(events: list[GdeltCloudEvent]) -> float:
+    """0–25 pts.  Highest event-type weight among all events in the window.
+
+    GdeltCloudEvent.event_type is Optional[str] — None events get the
+    default weight rather than a KeyError.
+    """
     if not events:
         return 0.0
     return max(
-        _EVENT_TYPE_WEIGHTS.get(e.event_type, _DEFAULT_EVENT_WEIGHT)
+        _EVENT_TYPE_WEIGHTS.get(e.event_type or "", _DEFAULT_EVENT_WEIGHT)
         for e in events
     )
 
@@ -176,7 +194,7 @@ def _score_rsf(rsf_press_freedom: float) -> float:
 
 
 def _compute_confidence(
-    events: list[AcledEvent],
+    events: list[GdeltCloudEvent],
     articles: list[GdeltArticle],
     stats: CountryStats,
     rsf_press_freedom: float,
@@ -185,9 +203,9 @@ def _compute_confidence(
     0.0–1.0.  Penalised when data sources are absent or sparse.
 
     Deductions:
-      -0.30  no ACLED events at all
-      -0.10  fewer than 3 ACLED events (but some)
-      -0.20  no GDELT articles
+      -0.30  no GDELT Cloud events at all
+      -0.10  fewer than 3 GDELT Cloud events (but some)
+      -0.20  no GDELT Doc API articles
       -0.05  CPJ has no recorded incidents for this country
       -0.10  RSF score is 0 (country not in index)
     """
@@ -218,7 +236,7 @@ def _level_from_score(score: float) -> SeverityLevel:
 
 
 def score_severity(
-    acled_events: list[AcledEvent],
+    conflict_events: list[GdeltCloudEvent],
     gdelt_articles: list[GdeltArticle],
     cpj_stats: CountryStats,
     rsf_press_freedom: float,
@@ -228,49 +246,53 @@ def score_severity(
     """
     Compute a severity level from multi-source conflict intelligence inputs.
 
-    Returns ``SeverityLevel.INSUFFICIENT_DATA`` when both ACLED and GDELT
-    inputs are empty — real-time data is required for a meaningful assessment.
-    CPJ and RSF inputs are always considered when available.
+    Returns ``SeverityLevel.INSUFFICIENT_DATA`` when both conflict events
+    and GDELT articles are empty — real-time data is required for a
+    meaningful assessment. CPJ and RSF inputs are always considered when
+    available.
 
     Args:
-        acled_events:      Validated ACLED events for the target region/window.
-        gdelt_articles:    Validated GDELT articles for the target query/window.
+        conflict_events:   Validated GdeltCloudEvent list for the target region.
+        gdelt_articles:    Validated GDELT Doc API articles for the target query.
         cpj_stats:         Historical CPJ incident stats for the target country.
         rsf_press_freedom: RSF Press Freedom Index score (0–100, higher = freer).
         reference_date:    Date used as "today" for recency decay. Defaults to
                            ``date.today()``. Pass a fixed date in tests.
+        gdelt_aggregate_tone: Mean tone from GDELT Doc API timelinetone endpoint.
     """
-    if not acled_events and not gdelt_articles:
+    if not conflict_events and not gdelt_articles:
         return SeverityResult(
             level=SeverityLevel.INSUFFICIENT_DATA,
             score=0.0,
             confidence=0.0,
             reasoning=(
-                "Insufficient data — ACLED and GDELT both returned empty results."
-                " Cannot produce a reliable safety assessment."
+                "Insufficient data — conflict events and GDELT articles both"
+                " returned empty results. Cannot produce a reliable safety assessment."
             ),
             component_scores={},
         )
 
     components: dict[str, float] = {
-        "fatalities": _score_fatalities(acled_events, reference_date),
-        "event_type": _score_event_type(acled_events),
+        "fatalities": _score_fatalities(conflict_events, reference_date),
+        "event_type": _score_event_type(conflict_events),
         "gdelt_tone": _score_gdelt_tone(gdelt_aggregate_tone),
         "cpj_rate": _score_cpj_rate(cpj_stats),
         "rsf_baseline": _score_rsf(rsf_press_freedom),
     }
     total = min(sum(components.values()), 100.0)
     level = _level_from_score(total)
-    confidence = _compute_confidence(acled_events, gdelt_articles, cpj_stats, rsf_press_freedom)
+    confidence = _compute_confidence(
+        conflict_events, gdelt_articles, cpj_stats, rsf_press_freedom
+    )
 
     # Build structured reasoning string.
-    total_fatalities = sum(e.fatalities for e in acled_events)
+    total_fatalities = sum(e.fatalities or 0 for e in conflict_events)
     avg_tone_str = f"{gdelt_aggregate_tone:.1f}" if gdelt_articles else "n/a"
     reasoning = (
-        f"ACLED: {total_fatalities} fatalities across {len(acled_events)} events"
+        f"GDELT Cloud: {total_fatalities} fatalities across {len(conflict_events)} events"
         f" (fatalities={components['fatalities']:.0f}/30,"
         f" type={components['event_type']:.0f}/25)"
-        f" | GDELT: {len(gdelt_articles)} articles avg_tone={avg_tone_str}"
+        f" | GDELT Doc API: {len(gdelt_articles)} articles avg_tone={avg_tone_str}"
         f" (tone={components['gdelt_tone']:.0f}/20)"
         f" | CPJ: {cpj_stats.incidents_per_year:.2f}/yr"
         f" (cpj={components['cpj_rate']:.0f}/15)"
