@@ -104,11 +104,13 @@ def validate_output(raw: dict, region: str) -> AlertOutput:
         raw:    Dict parsed from Gemma 4's JSON response.
         region: Watch zone region string, threaded into the fallback.
     """
+    logger.debug(f"output_validator: raw dict before validation — {raw!r}")
     try:
         return AlertOutput.model_validate(raw)
-    except ValidationError:
+    except ValidationError as exc:
         logger.warning(
-            "output_validator: AlertOutput failed validation — returning fallback"
+            f"output_validator: AlertOutput failed validation — {exc.error_count()} error(s): "
+            f"{[e['msg'] for e in exc.errors()]} — returning fallback"
         )
         return AlertOutput.model_construct(
             severity="INSUFFICIENT_DATA",

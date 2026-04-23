@@ -97,6 +97,8 @@ class GemmaClient:
             )
             return _fallback(region)
 
+        logger.debug(f"gemma_client: raw response for region={region!r} — {raw_text!r}")
+
         try:
             raw_dict = _extract_json(raw_text)
         except json.JSONDecodeError as exc:
