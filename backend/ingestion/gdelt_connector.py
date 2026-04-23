@@ -1,12 +1,16 @@
 """
 GDELT 2.0 Doc API ingestion connector.
 
-Fetches news articles and media signals via the GDELT Doc API (mode=artlist).
-No authentication required. Results are cached in Redis for 900 s to match
-GDELT's 15-minute update cadence.
+Fetches news articles via the GDELT Doc API (mode=artlist) and aggregate
+sentiment via a second call (mode=timelinetone). No authentication required.
+Results are cached in Redis for 900 s to match GDELT's 15-minute update cadence.
 
 Redis key pattern : gdelt:{query_hash}:{timespan}  TTL: 900 s
 query_hash        : MD5 of "{query}:{country}" — stable across calls
+
+The artlist API does not return per-article tone scores; tone is only available
+via the timelinetone endpoint. Both calls are made together and the aggregate
+tone (mean of non-zero 15-minute-window values) is stored in GdeltResponse.
 """
 
 from __future__ import annotations
@@ -34,27 +38,51 @@ def _query_hash(query: str, country: str | None) -> str:
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
+def _parse_aggregate_tone(data: dict) -> float:
+    """
+    Compute mean of non-zero values from a GDELT timelinetone response.
+
+    GDELT returns a 15-minute-resolution time series. Windows with no
+    matching articles have value=0 and are excluded from the mean so
+    they don't dilute periods of genuine coverage.
+
+    Returns 0.0 when no non-zero data points are present.
+    """
+    timeline = data.get("timeline", [])
+    if not timeline:
+        return 0.0
+    values = [
+        point["value"]
+        for series in timeline
+        for point in series.get("data", [])
+        if point.get("value", 0) != 0
+    ]
+    return sum(values) / len(values) if values else 0.0
+
+
 class GdeltArticle(BaseModel):
     url: str
     title: str
     seendate: str           # GDELT format: "20260423T120000Z"
     sourcecountry: str = ""
     language: str = ""
-    tone: float = 0.0       # negative = hostile; see TONE_* constants above
     domain: str = ""
+    # Note: tone is NOT returned by the artlist API — use GdeltResponse.aggregate_tone
+    # for the window-level sentiment signal derived from the timelinetone endpoint.
 
 
 class GdeltResponse(BaseModel):
     articles: list[GdeltArticle] = []
+    aggregate_tone: float = 0.0   # mean non-zero tone across the timespan window
 
 
 class GdeltConnector:
     """
     Async GDELT Doc API connector.
 
-    Fetches news articles for a query term and optional country filter.
-    Redis caching prevents redundant calls within the 15-minute GDELT
-    update window. Falls back to direct API calls when Redis is unavailable.
+    Makes two calls per fetch: artlist (articles) and timelinetone (sentiment).
+    Both results are packed into a GdeltResponse and cached together under a
+    single Redis key. Falls back to direct API calls when Redis is unavailable.
     """
 
     def __init__(self, redis_client: aioredis.Redis | None = None) -> None:
@@ -66,13 +94,13 @@ class GdeltConnector:
         timespan: str = "24H",
         maxrecords: int = 20,
         country: str | None = None,
-    ) -> list[GdeltArticle]:
+    ) -> GdeltResponse:
         """
-        Return GDELT news articles matching *query*.
+        Return GDELT articles and aggregate tone for *query*.
 
         Results are served from Redis when available. On cache miss the
-        connector fetches from the API, validates with Pydantic, writes to
-        Redis, and returns the articles.
+        connector makes two API calls (artlist + timelinetone), packages
+        both into a GdeltResponse, writes to Redis, and returns the result.
 
         Args:
             query:      Search query (keywords / phrase).
@@ -88,38 +116,56 @@ class GdeltConnector:
                 cached = await self._redis.get(cache_key)
                 if cached:
                     logger.debug(f"Cache hit: {cache_key}")
-                    return [GdeltArticle(**a) for a in json.loads(cached)]
+                    data = json.loads(cached)
+                    return GdeltResponse(
+                        articles=[GdeltArticle(**a) for a in data["articles"]],
+                        aggregate_tone=data["aggregate_tone"],
+                    )
             except Exception as exc:
                 logger.warning(f"Redis read failed, calling API directly: {exc}")
 
-        params: dict[str, Any] = {
+        artlist_params: dict[str, Any] = {
             "query": query,
             "mode": "artlist",
             "maxrecords": maxrecords,
             "timespan": timespan,
             "format": "json",
         }
+        tone_params: dict[str, Any] = {
+            "query": query,
+            "mode": "timelinetone",
+            "timespan": timespan,
+            "format": "json",
+        }
         if country:
-            params["country"] = country
+            artlist_params["country"] = country
+            tone_params["country"] = country
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(GDELT_BASE_URL, params=params)
-            response.raise_for_status()
+            artlist_resp = await client.get(GDELT_BASE_URL, params=artlist_params)
+            artlist_resp.raise_for_status()
+            tone_resp = await client.get(GDELT_BASE_URL, params=tone_params)
+            tone_resp.raise_for_status()
 
-        gdelt_resp = GdeltResponse(**response.json())
+        articles = GdeltResponse(**artlist_resp.json()).articles
+        aggregate_tone = _parse_aggregate_tone(tone_resp.json())
+
         logger.info(
-            f"GDELT: fetched {len(gdelt_resp.articles)} articles"
+            f"GDELT: fetched {len(articles)} articles"
             f" for {query!r} timespan={timespan}"
+            f" aggregate_tone={aggregate_tone:.2f}"
         )
+
+        response = GdeltResponse(articles=articles, aggregate_tone=aggregate_tone)
 
         if self._redis:
             try:
-                await self._redis.set(
-                    cache_key,
-                    json.dumps([a.model_dump() for a in gdelt_resp.articles]),
-                    ex=GDELT_CACHE_TTL,
-                )
+                payload = json.dumps({
+                    "articles": [a.model_dump() for a in articles],
+                    "aggregate_tone": aggregate_tone,
+                })
+                await self._redis.set(cache_key, payload, ex=GDELT_CACHE_TTL)
             except Exception as exc:
                 logger.warning(f"Redis write failed: {exc}")
 
-        return gdelt_resp.articles
+        return response

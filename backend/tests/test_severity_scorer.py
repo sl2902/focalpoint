@@ -59,12 +59,11 @@ def make_event(event_type: str, fatalities: int = 0) -> AcledEvent:
     )
 
 
-def make_article(tone: float) -> GdeltArticle:
+def make_article() -> GdeltArticle:
     return GdeltArticle(
         url="https://reuters.com/test",
         title="Test article",
         seendate="20260420T120000Z",
-        tone=tone,
     )
 
 
@@ -142,33 +141,31 @@ class TestEventTypeScore:
 
 class TestGdeltToneScore:
     def test_very_hostile(self) -> None:
-        assert _score_gdelt_tone([make_article(-18.0)]) == 20.0
+        assert _score_gdelt_tone(-18.0) == 20.0
 
     def test_hostile(self) -> None:
-        assert _score_gdelt_tone([make_article(-12.0)]) == 15.0
+        assert _score_gdelt_tone(-12.0) == 15.0
 
     def test_negative(self) -> None:
-        assert _score_gdelt_tone([make_article(-7.0)]) == 10.0
+        assert _score_gdelt_tone(-7.0) == 10.0
 
     def test_mildly_negative(self) -> None:
-        assert _score_gdelt_tone([make_article(-3.0)]) == 5.0
+        assert _score_gdelt_tone(-3.0) == 5.0
 
     def test_neutral_or_positive(self) -> None:
-        assert _score_gdelt_tone([make_article(2.0)]) == 0.0
+        assert _score_gdelt_tone(2.0) == 0.0
 
-    def test_averages_multiple_articles(self) -> None:
-        # avg = (-12 + -8) / 2 = -10.0 exactly — fails strict < -10 check,
-        # falls into the < -5 bucket → 10 pts
-        articles = [make_article(-12.0), make_article(-8.0)]
-        assert _score_gdelt_tone(articles) == 10.0
+    def test_zero_tone(self) -> None:
+        assert _score_gdelt_tone(0.0) == 0.0
 
-    def test_averages_into_hostile_bucket(self) -> None:
-        # avg = (-14 + -8) / 2 = -11.0 → satisfies < -10 → 15 pts
-        articles = [make_article(-14.0), make_article(-8.0)]
-        assert _score_gdelt_tone(articles) == 15.0
+    def test_boundary_at_minus_fifteen(self) -> None:
+        assert _score_gdelt_tone(-15.0) == 15.0   # not < -15, so next bucket
 
-    def test_empty_articles(self) -> None:
-        assert _score_gdelt_tone([]) == 0.0
+    def test_boundary_at_minus_ten(self) -> None:
+        assert _score_gdelt_tone(-10.0) == 10.0   # not < -10, so next bucket
+
+    def test_boundary_at_minus_five(self) -> None:
+        assert _score_gdelt_tone(-5.0) == 5.0     # not < -5, so mildly-negative
 
 
 class TestCpjRateScore:
@@ -214,20 +211,20 @@ class TestRsfScore:
 class TestConfidence:
     def test_full_data_gives_max_confidence(self) -> None:
         events = [make_event("Battles", 5), make_event("Battles", 3), make_event("Riots", 1)]
-        articles = [make_article(-8.0)]
+        articles = [make_article()]
         cpj = make_cpj(3.0, total=10)
         conf = _compute_confidence(events, articles, cpj, 40.0)
         assert conf == 1.0
 
     def test_no_events_reduces_confidence(self) -> None:
-        articles = [make_article(-8.0)]
+        articles = [make_article()]
         cpj = make_cpj(3.0, total=10)
         conf = _compute_confidence([], articles, cpj, 40.0)
         assert conf == pytest.approx(0.7)
 
     def test_sparse_events_reduces_confidence(self) -> None:
         events = [make_event("Battles", 5)]  # only 1 event < 3
-        articles = [make_article(-8.0)]
+        articles = [make_article()]
         cpj = make_cpj(3.0, total=10)
         conf = _compute_confidence(events, articles, cpj, 40.0)
         assert conf == pytest.approx(0.9)
@@ -240,14 +237,14 @@ class TestConfidence:
 
     def test_no_cpj_data_reduces_confidence(self) -> None:
         events = [make_event("Battles", 5), make_event("Riots", 2), make_event("Protests")]
-        articles = [make_article(-8.0)]
+        articles = [make_article()]
         cpj = make_cpj(0.0, total=0)
         conf = _compute_confidence(events, articles, cpj, 40.0)
         assert conf == pytest.approx(0.95)
 
     def test_zero_rsf_reduces_confidence(self) -> None:
         events = [make_event("Battles", 5), make_event("Riots", 2), make_event("Protests")]
-        articles = [make_article(-8.0)]
+        articles = [make_article()]
         cpj = make_cpj(3.0, total=10)
         conf = _compute_confidence(events, articles, cpj, 0.0)
         assert conf == pytest.approx(0.9)
@@ -257,7 +254,7 @@ class TestConfidence:
         cpj = make_cpj(0.0, total=0)
         # deliberately trigger all penalties except no-events + no-articles
         # which already gives INSUFFICIENT_DATA path, so test with articles only
-        conf = _compute_confidence([], [make_article(-5.0)], cpj, 0.0)
+        conf = _compute_confidence([], [make_article()], cpj, 0.0)
         assert conf >= 0.1
 
 
@@ -272,7 +269,7 @@ class TestGreenLevel:
         # = 0 + 5 + 0 + 0 + 0 = 5 → GREEN
         result = score_severity(
             acled_events=[make_event("Protests", 0)],
-            gdelt_articles=[make_article(2.0)],
+            gdelt_articles=[make_article()],
             cpj_stats=make_cpj(0.0, total=0),
             rsf_press_freedom=85.0,
         )
@@ -281,7 +278,7 @@ class TestGreenLevel:
 
     def test_green_has_high_confidence_with_full_data(self) -> None:
         events = [make_event("Protests"), make_event("Protests"), make_event("Protests")]
-        result = score_severity(events, [make_article(1.0)], make_cpj(0.0, total=0), 90.0)
+        result = score_severity(events, [make_article()], make_cpj(0.0, total=0), 90.0)
         assert result.confidence >= 0.95
 
 
@@ -291,10 +288,11 @@ class TestAmberLevel:
         # = 16 + 10 + 5 + 0 + 0 = 31 → AMBER
         result = score_severity(
             acled_events=[make_event("Riots", 5)],
-            gdelt_articles=[make_article(-3.0)],
+            gdelt_articles=[make_article()],
             cpj_stats=make_cpj(0.0, total=0),
             rsf_press_freedom=85.0,
             reference_date=_EVENT_DATE,
+            gdelt_aggregate_tone=-3.0,
         )
         assert result.level == SeverityLevel.AMBER
         assert result.score == pytest.approx(31.0)
@@ -306,10 +304,11 @@ class TestRedLevel:
         # = 24 + 22 + 10 + 6 + 7 = 69 → RED
         result = score_severity(
             acled_events=[make_event("Battles", 12)],
-            gdelt_articles=[make_article(-7.0)],
+            gdelt_articles=[make_article()],
             cpj_stats=make_cpj(1.5, total=5),
             rsf_press_freedom=40.0,
             reference_date=_EVENT_DATE,
+            gdelt_aggregate_tone=-7.0,
         )
         assert result.level == SeverityLevel.RED
         assert result.score == pytest.approx(69.0)
@@ -321,10 +320,11 @@ class TestCriticalLevel:
         # = 30 + 25 + 20 + 15 + 10 = 100 → CRITICAL
         result = score_severity(
             acled_events=[make_event("Explosions/Remote violence", 30)],
-            gdelt_articles=[make_article(-18.0)],
+            gdelt_articles=[make_article()],
             cpj_stats=make_cpj(8.0, total=50),
             rsf_press_freedom=15.0,
             reference_date=_EVENT_DATE,
+            gdelt_aggregate_tone=-18.0,
         )
         assert result.level == SeverityLevel.CRITICAL
         assert result.score == pytest.approx(100.0)
@@ -332,8 +332,9 @@ class TestCriticalLevel:
     def test_score_capped_at_100(self) -> None:
         # Multiple high-severity events push sum > 100 — should be capped.
         events = [make_event("Explosions/Remote violence", 30)] * 5
-        articles = [make_article(-20.0)] * 5
-        result = score_severity(events, articles, make_cpj(10.0, total=100), 5.0)
+        articles = [make_article()] * 5
+        result = score_severity(events, articles, make_cpj(10.0, total=100), 5.0,
+                                gdelt_aggregate_tone=-20.0)
         assert result.score <= 100.0
         assert result.level == SeverityLevel.CRITICAL
 
@@ -375,9 +376,10 @@ class TestPartialData:
     def test_gdelt_only_no_acled_still_scores(self) -> None:
         result = score_severity(
             acled_events=[],
-            gdelt_articles=[make_article(-12.0)],
+            gdelt_articles=[make_article()],
             cpj_stats=make_cpj(0.0, total=0),
             rsf_press_freedom=85.0,
+            gdelt_aggregate_tone=-12.0,
         )
         assert result.level != SeverityLevel.INSUFFICIENT_DATA
         assert result.component_scores["fatalities"] == 0.0
@@ -395,7 +397,7 @@ class TestPartialData:
     def test_gdelt_only_confidence_reduced(self) -> None:
         result = score_severity(
             acled_events=[],
-            gdelt_articles=[make_article(-5.0)],
+            gdelt_articles=[make_article()],
             cpj_stats=make_cpj(3.0, total=10),
             rsf_press_freedom=50.0,
         )
@@ -411,7 +413,7 @@ class TestResultStructure:
     def test_component_scores_has_all_five_keys(self) -> None:
         result = score_severity(
             [make_event("Battles", 5)],
-            [make_article(-5.0)],
+            [make_article()],
             make_cpj(1.0, total=5),
             50.0,
         )
@@ -422,7 +424,7 @@ class TestResultStructure:
     def test_reasoning_contains_composite_score(self) -> None:
         result = score_severity(
             [make_event("Battles", 5)],
-            [make_article(-5.0)],
+            [make_article()],
             make_cpj(1.0, total=5),
             50.0,
         )
@@ -431,7 +433,7 @@ class TestResultStructure:
     def test_reasoning_contains_level(self) -> None:
         result = score_severity(
             [make_event("Battles", 5)],
-            [make_article(-5.0)],
+            [make_article()],
             make_cpj(1.0, total=5),
             50.0,
         )
@@ -440,7 +442,7 @@ class TestResultStructure:
     def test_result_is_pydantic_model(self) -> None:
         result = score_severity(
             [make_event("Protests")],
-            [make_article(1.0)],
+            [make_article()],
             make_cpj(0.0, total=0),
             80.0,
         )
@@ -449,10 +451,11 @@ class TestResultStructure:
     def test_score_matches_sum_of_components(self) -> None:
         result = score_severity(
             [make_event("Riots", 5)],
-            [make_article(-3.0)],
+            [make_article()],
             make_cpj(0.0, total=0),
             85.0,
             reference_date=_EVENT_DATE,
+            gdelt_aggregate_tone=-3.0,
         )
         expected = sum(result.component_scores.values())
         assert result.score == pytest.approx(min(expected, 100.0))
@@ -540,7 +543,7 @@ class TestRecencyDecay:
         # Same event, same raw fatalities; distant reference_date → lower fatality score.
         event = make_event("Battles", 26)  # event_date = 2026-04-20
         cpj = make_cpj(0.0, total=0)
-        articles = [make_article(0.0)]  # tone=0 → 0 tone pts
+        articles = [make_article()]  # tone=0 → 0 tone pts
 
         result_same_day = score_severity(
             [event], articles, cpj, 75.0,

@@ -3,6 +3,13 @@ Independent tests for the GDELT ingestion connector.
 
 All external I/O (httpx, Redis) is mocked — no real network calls, no real
 Redis instance required.
+
+fetch_articles() makes two GET calls per request:
+  1. mode=artlist  — returns article list
+  2. mode=timelinetone — returns 15-minute tone time series
+
+Both results are packed into GdeltResponse and cached together under one
+Redis key as {"articles": [...], "aggregate_tone": <float>}.
 """
 
 import json
@@ -17,6 +24,7 @@ from backend.ingestion.gdelt_connector import (
     GdeltArticle,
     GdeltConnector,
     GdeltResponse,
+    _parse_aggregate_tone,
     _query_hash,
 )
 
@@ -30,7 +38,6 @@ SAMPLE_ARTICLE: dict = {
     "seendate": "20260420T140000Z",
     "sourcecountry": "United Kingdom",
     "language": "English",
-    "tone": -12.5,
     "domain": "reuters.com",
 }
 
@@ -41,6 +48,25 @@ SAMPLE_API_RESPONSE: dict = {
 EMPTY_API_RESPONSE: dict = {
     "articles": [],
 }
+
+# Timelinetone response with two non-zero values and one zero (empty window).
+SAMPLE_TONE_RESPONSE: dict = {
+    "query_details": {"title": "conflict Gaza", "date_resolution": "15m"},
+    "timeline": [
+        {
+            "series": "Average Tone",
+            "data": [
+                {"date": "20260420T000000Z", "value": -6.0},
+                {"date": "20260420T001500Z", "value": 0},    # empty window
+                {"date": "20260420T003000Z", "value": -4.0},
+            ],
+        }
+    ],
+}
+# Expected aggregate_tone: mean of non-zero values = (-6.0 + -4.0) / 2 = -5.0
+_EXPECTED_TONE = -5.0
+
+EMPTY_TONE_RESPONSE: dict = {"timeline": []}
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -65,12 +91,67 @@ def articles_response() -> MagicMock:
 
 
 @pytest.fixture
-def mock_http_client(articles_response: MagicMock) -> AsyncMock:
+def tone_response() -> MagicMock:
+    resp = MagicMock()
+    resp.json.return_value = SAMPLE_TONE_RESPONSE
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+@pytest.fixture
+def mock_http_client(articles_response: MagicMock, tone_response: MagicMock) -> AsyncMock:
+    """
+    AsyncClient mock that routes by mode param:
+      mode=artlist      → articles_response
+      mode=timelinetone → tone_response
+    """
     client = AsyncMock()
     client.__aenter__.return_value = client
     client.__aexit__.return_value = False
-    client.get.return_value = articles_response
+
+    def _get_by_mode(url, **kwargs):
+        mode = kwargs.get("params", {}).get("mode", "artlist")
+        return tone_response if mode == "timelinetone" else articles_response
+
+    client.get = AsyncMock(side_effect=_get_by_mode)
     return client
+
+
+# ---------------------------------------------------------------------------
+# _parse_aggregate_tone — unit tests, no I/O
+# ---------------------------------------------------------------------------
+
+
+class TestParseAggregateTone:
+    def test_mean_of_nonzero_values(self) -> None:
+        assert _parse_aggregate_tone(SAMPLE_TONE_RESPONSE) == pytest.approx(-5.0)
+
+    def test_zero_values_excluded(self) -> None:
+        data = {"timeline": [{"series": "Average Tone", "data": [
+            {"date": "d1", "value": -10.0},
+            {"date": "d2", "value": 0},
+            {"date": "d3", "value": 0},
+        ]}]}
+        assert _parse_aggregate_tone(data) == pytest.approx(-10.0)
+
+    def test_all_zeros_returns_zero(self) -> None:
+        data = {"timeline": [{"series": "Average Tone", "data": [
+            {"date": "d1", "value": 0},
+        ]}]}
+        assert _parse_aggregate_tone(data) == 0.0
+
+    def test_empty_timeline_returns_zero(self) -> None:
+        assert _parse_aggregate_tone({"timeline": []}) == 0.0
+
+    def test_missing_timeline_key_returns_zero(self) -> None:
+        assert _parse_aggregate_tone({}) == 0.0
+
+    def test_positive_values_averaged(self) -> None:
+        data = {"timeline": [{"series": "Average Tone", "data": [
+            {"date": "d1", "value": 2.0},
+            {"date": "d2", "value": 4.0},
+        ]}]}
+        assert _parse_aggregate_tone(data) == pytest.approx(3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +163,6 @@ class TestGdeltArticle:
     def test_valid_full_article(self) -> None:
         article = GdeltArticle(**SAMPLE_ARTICLE)
         assert article.url == "https://reuters.com/world/conflict-report-2026"
-        assert article.tone == -12.5
         assert article.domain == "reuters.com"
 
     def test_optional_fields_default(self) -> None:
@@ -94,16 +174,11 @@ class TestGdeltArticle:
         article = GdeltArticle(**minimal)
         assert article.sourcecountry == ""
         assert article.language == ""
-        assert article.tone == 0.0
         assert article.domain == ""
 
-    def test_negative_tone_accepted(self) -> None:
-        article = GdeltArticle(**{**SAMPLE_ARTICLE, "tone": -25.0})
-        assert article.tone == -25.0
-
-    def test_positive_tone_accepted(self) -> None:
-        article = GdeltArticle(**{**SAMPLE_ARTICLE, "tone": 3.2})
-        assert article.tone == 3.2
+    def test_no_tone_field(self) -> None:
+        article = GdeltArticle(**SAMPLE_ARTICLE)
+        assert not hasattr(article, "tone")
 
 
 class TestGdeltResponse:
@@ -119,6 +194,14 @@ class TestGdeltResponse:
     def test_missing_articles_key_defaults_to_empty(self) -> None:
         resp = GdeltResponse()
         assert resp.articles == []
+
+    def test_aggregate_tone_defaults_to_zero(self) -> None:
+        resp = GdeltResponse()
+        assert resp.aggregate_tone == 0.0
+
+    def test_aggregate_tone_set_explicitly(self) -> None:
+        resp = GdeltResponse(aggregate_tone=-7.5)
+        assert resp.aggregate_tone == -7.5
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +232,7 @@ class TestQueryHash:
 
 
 class TestCacheMiss:
-    async def test_returns_articles(
+    async def test_returns_gdelt_response(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
@@ -159,12 +242,27 @@ class TestCacheMiss:
             return_value=mock_http_client,
         ):
             connector = GdeltConnector(redis_client=mock_redis)
-            articles = await connector.fetch_articles("conflict Gaza")
+            result = await connector.fetch_articles("conflict Gaza")
 
-        assert len(articles) == 1
-        assert articles[0].domain == "reuters.com"
+        assert isinstance(result, GdeltResponse)
+        assert len(result.articles) == 1
+        assert result.articles[0].domain == "reuters.com"
 
-    async def test_get_request_uses_correct_base_url(
+    async def test_aggregate_tone_populated(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        with patch(
+            "backend.ingestion.gdelt_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltConnector(redis_client=mock_redis)
+            result = await connector.fetch_articles("conflict Gaza")
+
+        assert result.aggregate_tone == pytest.approx(_EXPECTED_TONE)
+
+    async def test_two_get_requests_made(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
@@ -176,10 +274,25 @@ class TestCacheMiss:
             connector = GdeltConnector(redis_client=mock_redis)
             await connector.fetch_articles("conflict Gaza")
 
-        args, kwargs = mock_http_client.get.call_args
+        assert mock_http_client.get.call_count == 2
+
+    async def test_artlist_request_uses_correct_base_url(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        with patch(
+            "backend.ingestion.gdelt_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltConnector(redis_client=mock_redis)
+            await connector.fetch_articles("conflict Gaza")
+
+        # First call is artlist
+        args, _ = mock_http_client.get.call_args_list[0]
         assert args[0] == GDELT_BASE_URL
 
-    async def test_required_params_sent(
+    async def test_artlist_params_sent(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
@@ -191,12 +304,31 @@ class TestCacheMiss:
             connector = GdeltConnector(redis_client=mock_redis)
             await connector.fetch_articles("journalist Syria", timespan="7D", maxrecords=10)
 
-        _, kwargs = mock_http_client.get.call_args
+        _, kwargs = mock_http_client.get.call_args_list[0]
         params = kwargs["params"]
         assert params["query"] == "journalist Syria"
         assert params["mode"] == "artlist"
         assert params["timespan"] == "7D"
         assert params["maxrecords"] == 10
+        assert params["format"] == "json"
+
+    async def test_timelinetone_params_sent(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        with patch(
+            "backend.ingestion.gdelt_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltConnector(redis_client=mock_redis)
+            await connector.fetch_articles("journalist Syria", timespan="7D")
+
+        _, kwargs = mock_http_client.get.call_args_list[1]
+        params = kwargs["params"]
+        assert params["query"] == "journalist Syria"
+        assert params["mode"] == "timelinetone"
+        assert params["timespan"] == "7D"
         assert params["format"] == "json"
 
     async def test_country_param_included_when_provided(
@@ -211,7 +343,7 @@ class TestCacheMiss:
             connector = GdeltConnector(redis_client=mock_redis)
             await connector.fetch_articles("war", country="UA")
 
-        _, kwargs = mock_http_client.get.call_args
+        _, kwargs = mock_http_client.get.call_args_list[0]
         assert kwargs["params"]["country"] == "UA"
 
     async def test_country_param_absent_when_not_provided(
@@ -226,19 +358,17 @@ class TestCacheMiss:
             connector = GdeltConnector(redis_client=mock_redis)
             await connector.fetch_articles("war")
 
-        _, kwargs = mock_http_client.get.call_args
+        _, kwargs = mock_http_client.get.call_args_list[0]
         assert "country" not in kwargs["params"]
 
-    async def test_articles_written_to_redis(
+    async def test_result_written_to_redis(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
         query = "conflict Gaza"
         timespan = "24H"
-        expected_hash = _query_hash(query, None)
-        expected_key = f"gdelt:{expected_hash}:{timespan}"
-        expected_payload = json.dumps([GdeltArticle(**SAMPLE_ARTICLE).model_dump()])
+        expected_key = f"gdelt:{_query_hash(query, None)}:{timespan}"
 
         with patch(
             "backend.ingestion.gdelt_connector.httpx.AsyncClient",
@@ -247,9 +377,12 @@ class TestCacheMiss:
             connector = GdeltConnector(redis_client=mock_redis)
             await connector.fetch_articles(query, timespan=timespan)
 
-        mock_redis.set.assert_called_once_with(
-            expected_key, expected_payload, ex=GDELT_CACHE_TTL
-        )
+        mock_redis.set.assert_called_once()
+        written_key, written_payload = mock_redis.set.call_args.args[:2]
+        assert written_key == expected_key
+        loaded = json.loads(written_payload)
+        assert loaded["articles"] == [GdeltArticle(**SAMPLE_ARTICLE).model_dump()]
+        assert loaded["aggregate_tone"] == pytest.approx(_EXPECTED_TONE)
 
     async def test_cache_key_includes_country_in_hash(
         self,
@@ -278,22 +411,26 @@ class TestCacheMiss:
 
 
 class TestCacheHit:
-    async def test_cached_articles_returned_without_api_call(
+    async def test_cached_result_returned_without_api_call(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
-        mock_redis.get.return_value = json.dumps([SAMPLE_ARTICLE]).encode()
+        cached_payload = json.dumps({
+            "articles": [SAMPLE_ARTICLE],
+            "aggregate_tone": -8.0,
+        }).encode()
+        mock_redis.get.return_value = cached_payload
 
         with patch(
             "backend.ingestion.gdelt_connector.httpx.AsyncClient",
             return_value=mock_http_client,
         ):
             connector = GdeltConnector(redis_client=mock_redis)
-            articles = await connector.fetch_articles("conflict Gaza")
+            result = await connector.fetch_articles("conflict Gaza")
 
-        assert len(articles) == 1
-        assert articles[0].tone == -12.5
+        assert len(result.articles) == 1
+        assert result.aggregate_tone == -8.0
         mock_http_client.get.assert_not_called()
 
     async def test_cache_key_is_deterministic(
@@ -301,8 +438,10 @@ class TestCacheHit:
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
-        """Same query/timespan should always hit the same Redis key."""
-        cached_payload = json.dumps([SAMPLE_ARTICLE]).encode()
+        cached_payload = json.dumps({
+            "articles": [SAMPLE_ARTICLE],
+            "aggregate_tone": -5.0,
+        }).encode()
         mock_redis.get.return_value = cached_payload
 
         with patch(
@@ -313,7 +452,6 @@ class TestCacheHit:
             await connector.fetch_articles("journalist Sudan", timespan="7D")
             await connector.fetch_articles("journalist Sudan", timespan="7D")
 
-        # Both calls should use the same key
         keys_checked = [call.args[0] for call in mock_redis.get.call_args_list]
         assert keys_checked[0] == keys_checked[1]
 
@@ -336,9 +474,9 @@ class TestRedisFailure:
             return_value=mock_http_client,
         ):
             connector = GdeltConnector(redis_client=broken_redis)
-            articles = await connector.fetch_articles("conflict Yemen")
+            result = await connector.fetch_articles("conflict Yemen")
 
-        assert len(articles) == 1
+        assert len(result.articles) == 1
 
     async def test_redis_write_error_does_not_raise(
         self,
@@ -353,9 +491,9 @@ class TestRedisFailure:
             return_value=mock_http_client,
         ):
             connector = GdeltConnector(redis_client=broken_redis)
-            articles = await connector.fetch_articles("conflict Yemen")
+            result = await connector.fetch_articles("conflict Yemen")
 
-        assert len(articles) == 1
+        assert len(result.articles) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +502,7 @@ class TestRedisFailure:
 
 
 class TestNoRedis:
-    async def test_fetch_without_redis_returns_articles(
+    async def test_fetch_without_redis_returns_response(
         self,
         mock_http_client: AsyncMock,
     ) -> None:
@@ -373,9 +511,9 @@ class TestNoRedis:
             return_value=mock_http_client,
         ):
             connector = GdeltConnector(redis_client=None)
-            articles = await connector.fetch_articles("journalist Myanmar")
+            result = await connector.fetch_articles("journalist Myanmar")
 
-        assert len(articles) == 1
+        assert len(result.articles) == 1
 
     async def test_no_redis_means_no_cache_write(
         self,
@@ -388,8 +526,8 @@ class TestNoRedis:
             connector = GdeltConnector(redis_client=None)
             await connector.fetch_articles("journalist Myanmar")
 
-        # No redis client — set should never be called
-        mock_http_client.get.assert_called_once()
+        # Two API calls (artlist + timelinetone) but no Redis writes.
+        assert mock_http_client.get.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -403,23 +541,43 @@ class TestEmptyResponse:
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
-        mock_http_client.get.return_value.json.return_value = EMPTY_API_RESPONSE
+        mock_http_client.get = AsyncMock(side_effect=lambda url, **kw: (
+            MagicMock(
+                json=lambda: EMPTY_API_RESPONSE,
+                raise_for_status=MagicMock(),
+            )
+            if kw.get("params", {}).get("mode") == "artlist"
+            else MagicMock(
+                json=lambda: EMPTY_TONE_RESPONSE,
+                raise_for_status=MagicMock(),
+            )
+        ))
 
         with patch(
             "backend.ingestion.gdelt_connector.httpx.AsyncClient",
             return_value=mock_http_client,
         ):
             connector = GdeltConnector(redis_client=mock_redis)
-            articles = await connector.fetch_articles("no results query")
+            result = await connector.fetch_articles("no results query")
 
-        assert articles == []
+        assert result.articles == []
 
     async def test_empty_response_still_cached(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
-        mock_http_client.get.return_value.json.return_value = EMPTY_API_RESPONSE
+        mock_http_client.get = AsyncMock(side_effect=lambda url, **kw: (
+            MagicMock(
+                json=lambda: EMPTY_API_RESPONSE,
+                raise_for_status=MagicMock(),
+            )
+            if kw.get("params", {}).get("mode") == "artlist"
+            else MagicMock(
+                json=lambda: EMPTY_TONE_RESPONSE,
+                raise_for_status=MagicMock(),
+            )
+        ))
 
         with patch(
             "backend.ingestion.gdelt_connector.httpx.AsyncClient",
@@ -430,7 +588,9 @@ class TestEmptyResponse:
 
         mock_redis.set.assert_called_once()
         written_payload = mock_redis.set.call_args.args[1]
-        assert json.loads(written_payload) == []
+        loaded = json.loads(written_payload)
+        assert loaded["articles"] == []
+        assert isinstance(loaded["aggregate_tone"], float)
 
 
 # ---------------------------------------------------------------------------
@@ -444,8 +604,8 @@ class TestHttpErrors:
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
-        mock_http_client.get.return_value.raise_for_status.side_effect = (
-            httpx.HTTPStatusError("503", request=MagicMock(), response=MagicMock())
+        mock_http_client.get.side_effect = httpx.HTTPStatusError(
+            "503", request=MagicMock(), response=MagicMock()
         )
 
         with patch(

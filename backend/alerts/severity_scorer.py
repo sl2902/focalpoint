@@ -137,18 +137,15 @@ def _score_event_type(events: list[AcledEvent]) -> float:
     )
 
 
-def _score_gdelt_tone(articles: list[GdeltArticle]) -> float:
-    """0–20 pts.  Escalates with increasingly negative average GDELT tone."""
-    if not articles:
-        return 0.0
-    avg = sum(a.tone for a in articles) / len(articles)
-    if avg < -15.0:
+def _score_gdelt_tone(aggregate_tone: float) -> float:
+    """0–20 pts.  Escalates with increasingly negative GDELT aggregate tone."""
+    if aggregate_tone < -15.0:
         return 20.0
-    if avg < -10.0:
+    if aggregate_tone < -10.0:
         return 15.0
-    if avg < -5.0:
+    if aggregate_tone < -5.0:
         return 10.0
-    if avg < 0.0:
+    if aggregate_tone < 0.0:
         return 5.0
     return 0.0
 
@@ -226,6 +223,7 @@ def score_severity(
     cpj_stats: CountryStats,
     rsf_press_freedom: float,
     reference_date: date | None = None,
+    gdelt_aggregate_tone: float = 0.0,
 ) -> SeverityResult:
     """
     Compute a severity level from multi-source conflict intelligence inputs.
@@ -257,7 +255,7 @@ def score_severity(
     components: dict[str, float] = {
         "fatalities": _score_fatalities(acled_events, reference_date),
         "event_type": _score_event_type(acled_events),
-        "gdelt_tone": _score_gdelt_tone(gdelt_articles),
+        "gdelt_tone": _score_gdelt_tone(gdelt_aggregate_tone),
         "cpj_rate": _score_cpj_rate(cpj_stats),
         "rsf_baseline": _score_rsf(rsf_press_freedom),
     }
@@ -267,11 +265,7 @@ def score_severity(
 
     # Build structured reasoning string.
     total_fatalities = sum(e.fatalities for e in acled_events)
-    avg_tone_str = (
-        f"{sum(a.tone for a in gdelt_articles) / len(gdelt_articles):.1f}"
-        if gdelt_articles
-        else "n/a"
-    )
+    avg_tone_str = f"{gdelt_aggregate_tone:.1f}" if gdelt_articles else "n/a"
     reasoning = (
         f"ACLED: {total_fatalities} fatalities across {len(acled_events)} events"
         f" (fatalities={components['fatalities']:.0f}/30,"
