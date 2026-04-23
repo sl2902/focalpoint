@@ -41,12 +41,13 @@ async def query(
     generator: AlertGenerator = Depends(get_alert_generator),
 ) -> QueryResponse:
     """Accept a journalist's natural language query and return a grounded assessment."""
+    region = body.region.title()
     sanitised = sanitise_query(body.text)
 
-    events = await gdelt_cloud.fetch_events(body.region)
-    gdelt_resp = await gdelt.fetch_articles(body.region)
-    cpj_stats = cpj.get_country_stats(body.region)
-    rsf_key = RSF_ALIASES.get(body.region, body.region)
+    events = await gdelt_cloud.fetch_events(region)
+    gdelt_resp = await gdelt.fetch_articles(region)
+    cpj_stats = cpj.get_country_stats(region)
+    rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
 
     alert = generator.generate(
@@ -55,7 +56,7 @@ async def query(
         gdelt_aggregate_tone=gdelt_resp.aggregate_tone,
         cpj_stats=cpj_stats,
         rsf_score=rsf_score,
-        region=body.region,
+        region=region,
         journalist_query=sanitised.text,
     )
 

@@ -91,6 +91,7 @@ async def _build_alert(
     cpj: CPJConnector,
     generator: AlertGenerator,
 ) -> AlertResponse:
+    region = region.title()
     events = await gdelt_cloud.fetch_events(region, days=days)
     gdelt_resp = await gdelt.fetch_articles(region)
     cpj_stats = cpj.get_country_stats(region)
