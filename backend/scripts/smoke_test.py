@@ -1,12 +1,26 @@
 """
 Smoke test — end-to-end data fetch and severity score.
 
+########################################################################
+# NOT PART OF THE AUTOMATED TEST SUITE                                  #
+#                                                                        #
+# This script makes live network calls to external APIs and requires    #
+# real credentials in .env:                                             #
+#                                                                        #
+#   ACLED_USERNAME      — from acleddata.com (register for free)        #
+#   ACLED_PASSWORD      — from acleddata.com                            #
+#   ACLED_TOKEN_URL     — https://acleddata.com/oauth/token             #
+#                                                                        #
+# GDELT requires no credentials. CPJ and RSF are loaded locally.        #
+# Do not run this script in CI — use uv run python -m pytest instead.   #
+########################################################################
+
 Loads credentials from .env via app Settings, fetches live data from
 ACLED and GDELT (no Redis), runs the severity scorer, and prints a
 human-readable summary.
 
 Usage:
-    uv run python -m backend.scripts.smoke_test
+    uv run python backend/scripts/smoke_test.py
 """
 
 from __future__ import annotations
