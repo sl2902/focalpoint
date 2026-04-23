@@ -390,6 +390,48 @@ class TestGemmaClient:
             result = client.generate_alert("prompt", _REGION)
             assert result.severity == level
 
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_insufficient_data_triggers_single_retry(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        bad = _valid_alert_dict(source_citations=[{"id": "not-valid", "description": "bad"}])
+        mock_client.models.generate_content.return_value = _mock_genai_response(bad)
+
+        client = GemmaClient(api_key="fake-key")
+        client.generate_alert("prompt", _REGION)
+
+        assert mock_client.models.generate_content.call_count == 2
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_retry_success_returns_valid_alert(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        bad = _valid_alert_dict(source_citations=[{"id": "not-valid", "description": "bad"}])
+        mock_client.models.generate_content.side_effect = [
+            _mock_genai_response(bad),
+            _mock_genai_response(_valid_alert_dict()),
+        ]
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.generate_alert("prompt", _REGION)
+
+        assert result.severity == "RED"
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_retry_exception_returns_insufficient_data(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        bad = _valid_alert_dict(source_citations=[{"id": "not-valid", "description": "bad"}])
+        mock_client.models.generate_content.side_effect = [
+            _mock_genai_response(bad),
+            RuntimeError("retry also failed"),
+        ]
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.generate_alert("prompt", _REGION)
+
+        assert result.severity == "INSUFFICIENT_DATA"
+
 
 # ---------------------------------------------------------------------------
 # AlertGenerator tests

@@ -107,9 +107,28 @@ class GemmaClient:
             )
             return _fallback(region)
 
-        # validate_output handles Pydantic validation and returns its own
-        # fallback on failure — no further exception handling needed here.
-        return validate_output(raw_dict, region)
+        result = validate_output(raw_dict, region)
+
+        if result.severity == "INSUFFICIENT_DATA":
+            logger.warning(
+                f"gemma_client: INSUFFICIENT_DATA for region={region!r} — retrying once"
+            )
+            try:
+                retry_response = self._client.models.generate_content(
+                    model=_BACKEND_MODEL,
+                    contents=prompt,
+                    config=_GENERATION_CONFIG,
+                )
+                retry_text = retry_response.text
+                if retry_text:
+                    logger.debug(f"gemma_client: retry raw response for region={region!r} — {retry_text!r}")
+                    result = validate_output(_extract_json(retry_text), region)
+            except Exception as exc:
+                logger.warning(
+                    f"gemma_client: retry failed for region={region!r} — {type(exc).__name__}: {exc}"
+                )
+
+        return result
 
 
 def _fallback(region: str) -> AlertOutput:
