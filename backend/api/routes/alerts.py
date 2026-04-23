@@ -25,7 +25,7 @@ from backend.api.dependencies import (
     get_gdelt_connector,
 )
 from backend.api.schemas import AlertResponse
-from backend.data.rsf_scores import RSF_SCORES
+from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
 from backend.ingestion.gdeltcloud_connector import GdeltCloudConnector
@@ -94,7 +94,8 @@ async def _build_alert(
     events = await gdelt_cloud.fetch_events(region, days=days)
     gdelt_resp = await gdelt.fetch_articles(region)
     cpj_stats = cpj.get_country_stats(region)
-    rsf_score = RSF_SCORES.get(region, 0.0)
+    rsf_key = RSF_ALIASES.get(region, region)
+    rsf_score = RSF_SCORES.get(rsf_key, 0.0)
 
     severity_result = score_severity(
         conflict_events=events,
@@ -119,7 +120,5 @@ async def _build_alert(
         source_citations=alert.source_citations,
         region=region,
         timestamp=alert.timestamp,
-        score=severity_result.score,
         confidence=severity_result.confidence,
-        reasoning=severity_result.reasoning,
     )

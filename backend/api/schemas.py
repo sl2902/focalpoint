@@ -2,6 +2,8 @@
 
 These are the shapes returned to the mobile client — distinct from the
 internal AlertOutput and SeverityResult models used between layers.
+score and reasoning are intentionally excluded: severity level is what
+journalists need; the numeric score and scorer reasoning are internal.
 """
 
 from __future__ import annotations
@@ -10,16 +12,16 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from backend.security.output_validator import Citation
+
 
 class AlertResponse(BaseModel):
     severity: str
     summary: str
-    source_citations: list[str]
+    source_citations: list[Citation]
     region: str
     timestamp: datetime
-    score: float
     confidence: float
-    reasoning: str
 
 
 class MapMarker(BaseModel):
@@ -40,7 +42,7 @@ class MarkersResponse(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     severity: str
-    source_citations: list[str]
+    source_citations: list[Citation]
     region: str
     timestamp: datetime
     was_sanitised: bool

@@ -18,7 +18,7 @@ from backend.api.dependencies import (
     get_gdelt_connector,
 )
 from backend.api.schemas import QueryResponse
-from backend.data.rsf_scores import RSF_SCORES
+from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
 from backend.ingestion.gdeltcloud_connector import GdeltCloudConnector
@@ -46,7 +46,8 @@ async def query(
     events = await gdelt_cloud.fetch_events(body.region)
     gdelt_resp = await gdelt.fetch_articles(body.region)
     cpj_stats = cpj.get_country_stats(body.region)
-    rsf_score = RSF_SCORES.get(body.region, 0.0)
+    rsf_key = RSF_ALIASES.get(body.region, body.region)
+    rsf_score = RSF_SCORES.get(rsf_key, 0.0)
 
     alert = generator.generate(
         conflict_events=events,

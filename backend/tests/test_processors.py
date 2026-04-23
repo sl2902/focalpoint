@@ -80,7 +80,7 @@ def _valid_alert_dict(**overrides) -> dict:
     base = {
         "severity": "RED",
         "summary": "Active clashes near journalist watch zone — restrict movement.",
-        "source_citations": ["conflict_PSE20260101"],
+        "source_citations": [{"id": "conflict_PSE20260101", "description": "Armed Clash — Gaza City, 2026-01-01 (5 fatalities)"}],
         "region": _REGION,
         "timestamp": _TS,
     }
@@ -339,7 +339,7 @@ class TestGemmaClient:
     def test_invalid_citation_returns_insufficient_data(self, mock_client_cls):
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
-        bad = _valid_alert_dict(source_citations=["not a url or event id"])
+        bad = _valid_alert_dict(source_citations=[{"id": "not a url or event id", "description": "invalid citation"}])
         mock_client.models.generate_content.return_value = _mock_genai_response(bad)
 
         client = GemmaClient(api_key="fake-key")

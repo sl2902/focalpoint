@@ -30,7 +30,7 @@ from backend.ingestion.gdeltcloud_connector import (
     GdeltCloudEvent,
     GdeltCloudGeo,
 )
-from backend.security.output_validator import AlertOutput
+from backend.security.output_validator import AlertOutput, Citation
 
 # ---------------------------------------------------------------------------
 # Shared fixture data
@@ -72,7 +72,7 @@ _CPJ_STATS = CountryStats(
 _ALERT_OUTPUT = AlertOutput(
     severity="RED",
     summary="Active armed clashes reported near the watch zone — restrict movement immediately.",
-    source_citations=["conflict_test_001"],
+    source_citations=[Citation(id="conflict_test_001", description="Armed Clash — Gaza, 2026-04-23 (5 fatalities)")],
     region="Gaza",
     timestamp=_TS,
 )
@@ -169,7 +169,7 @@ class TestGetRegionAlerts:
         resp = client.get("/alerts/Gaza")
         body = resp.json()
         for field in ("severity", "summary", "source_citations", "region",
-                      "timestamp", "score", "confidence", "reasoning"):
+                      "timestamp", "confidence"):
             assert field in body, f"missing field: {field}"
 
     def test_severity_is_valid_level(self, client: TestClient) -> None:
@@ -182,12 +182,6 @@ class TestGetRegionAlerts:
         resp = client.get("/alerts/Ukraine")
         assert resp.json()["region"] == "Ukraine"
 
-    def test_score_is_float_in_range(self, client: TestClient) -> None:
-        resp = client.get("/alerts/Gaza")
-        score = resp.json()["score"]
-        assert isinstance(score, float | int)
-        assert 0.0 <= score <= 100.0
-
     def test_confidence_is_float_in_range(self, client: TestClient) -> None:
         resp = client.get("/alerts/Gaza")
         confidence = resp.json()["confidence"]
@@ -195,7 +189,9 @@ class TestGetRegionAlerts:
 
     def test_source_citations_is_list(self, client: TestClient) -> None:
         resp = client.get("/alerts/Gaza")
-        assert isinstance(resp.json()["source_citations"], list)
+        citations = resp.json()["source_citations"]
+        assert isinstance(citations, list)
+        assert all("id" in c and "description" in c for c in citations)
 
     def test_days_query_param_accepted(self, client: TestClient) -> None:
         resp = client.get("/alerts/Gaza?days=7")
@@ -220,6 +216,24 @@ class TestGetRegionAlerts:
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
         app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
 
+    def test_palestine_rsf_alias_applied(self, client: TestClient) -> None:
+        """RSF_ALIASES must translate 'Palestine' → 'West Bank and Gaza' (27.41)."""
+        from unittest.mock import patch
+
+        from backend.alerts.severity_scorer import SeverityLevel, SeverityResult
+
+        fake = SeverityResult(
+            level=SeverityLevel.RED,
+            score=62.0,
+            confidence=0.85,
+            reasoning="test",
+            component_scores={},
+        )
+        with patch("backend.api.routes.alerts.score_severity", return_value=fake) as mock_score:
+            resp = client.get("/alerts/Palestine")
+        assert resp.status_code == 200
+        assert mock_score.call_args.kwargs["rsf_press_freedom"] == pytest.approx(27.41)
+
 
 # ---------------------------------------------------------------------------
 # GET /alerts/watchzone
@@ -242,7 +256,7 @@ class TestGetWatchzoneAlerts:
         resp = client.get("/alerts/watchzone", params=self._PARAMS)
         body = resp.json()
         for field in ("severity", "summary", "source_citations", "region",
-                      "timestamp", "score", "confidence", "reasoning"):
+                      "timestamp", "confidence"):
             assert field in body
 
     def test_region_reflects_label(self, client: TestClient) -> None:

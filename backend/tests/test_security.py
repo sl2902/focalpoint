@@ -21,6 +21,7 @@ from backend.security.rate_limiter import (
 )
 from backend.security.output_validator import (
     AlertOutput,
+    Citation,
     JournalistQuery,
     WatchZone,
     validate_output,
@@ -37,7 +38,7 @@ def _valid_alert(**overrides) -> dict:
     base = {
         "severity": "RED",
         "summary": "Active clashes reported near the watch zone.",
-        "source_citations": ["https://acleddata.com/event/12345"],
+        "source_citations": [{"id": "https://acleddata.com/event/12345", "description": "Test citation description"}],
         "region": "Gaza",
         "timestamp": _VALID_TIMESTAMP,
     }
@@ -140,16 +141,19 @@ class TestAlertOutput:
     def test_valid_output_with_url_citation(self) -> None:
         alert = AlertOutput(**_valid_alert())
         assert alert.severity == "RED"
-        assert alert.source_citations == ["https://acleddata.com/event/12345"]
+        assert alert.source_citations[0].id == "https://acleddata.com/event/12345"
 
     def test_valid_output_with_gdelt_cloud_id_citation(self) -> None:
-        alert = AlertOutput(**_valid_alert(source_citations=["conflict_PSE20240415"]))
-        assert alert.source_citations == ["conflict_PSE20240415"]
+        alert = AlertOutput(**_valid_alert(source_citations=[
+            {"id": "conflict_PSE20240415", "description": "Armed Clash — Gaza City, 2026-04-15 (3 fatalities)"}
+        ]))
+        assert alert.source_citations[0].id == "conflict_PSE20240415"
 
     def test_valid_output_with_mixed_citations(self) -> None:
-        alert = AlertOutput(**_valid_alert(
-            source_citations=["conflict_PSE20240415", "https://gdeltproject.org/article/123"]
-        ))
+        alert = AlertOutput(**_valid_alert(source_citations=[
+            {"id": "conflict_PSE20240415", "description": "Armed Clash — Gaza City"},
+            {"id": "https://gdeltproject.org/article/123", "description": "Conflict escalates in Gaza"},
+        ]))
         assert len(alert.source_citations) == 2
 
     @pytest.mark.parametrize("severity", [
@@ -161,7 +165,9 @@ class TestAlertOutput:
 
     def test_invalid_citation_free_text_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            AlertOutput(**_valid_alert(source_citations=["ACLED event near Gaza"]))
+            AlertOutput(**_valid_alert(source_citations=[
+                {"id": "ACLED event near Gaza", "description": "some description"}
+            ]))
 
     def test_empty_citations_list_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -197,6 +203,7 @@ class TestValidateOutput:
         assert isinstance(result, AlertOutput)
         assert result.severity == "RED"
         assert result.region == "Gaza"
+        assert result.source_citations[0].id == "https://acleddata.com/event/12345"
 
     def test_validate_output_returns_fallback_on_invalid_input(self) -> None:
         result = validate_output({"severity": "INVALID", "summary": "x"}, region="Gaza")

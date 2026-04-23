@@ -58,25 +58,30 @@ class WatchZone(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class Citation(BaseModel):
+    id: str          # GDELT Cloud event ID (e.g. "conflict_50be6d52") or URL
+    description: str # Human-readable: "Armed Clash — Gaza City, 2026-04-22 (5 fatalities)"
+
+
 class AlertOutput(BaseModel):
     severity: Literal["GREEN", "AMBER", "RED", "CRITICAL", "INSUFFICIENT_DATA"]
     summary: str = Field(min_length=10, max_length=1000)
-    source_citations: list[str] = Field(min_length=1)
+    source_citations: list[Citation] = Field(min_length=1)
     region: str
     timestamp: datetime
 
     @field_validator("source_citations", mode="after")
     @classmethod
-    def citations_must_be_real(cls, v: list[str]) -> list[str]:
-        """Each citation must be an ACLED event ID or a URL.
+    def citations_must_be_real(cls, v: list[Citation]) -> list[Citation]:
+        """Each citation id must be a URL or GDELT Cloud event ID.
 
         Rejects free-form text masquerading as a citation — prevents
         Gemma 4 from hallucinating plausible-sounding but invalid sources.
         """
         for citation in v:
-            if not (_URL_RE.match(citation) or _GDELT_CLOUD_ID_RE.match(citation)):
+            if not (_URL_RE.match(citation.id) or _GDELT_CLOUD_ID_RE.match(citation.id)):
                 raise ValueError(
-                    f"Citation must be a URL or GDELT Cloud event ID, got: {citation!r}"
+                    f"Citation id must be a URL or GDELT Cloud event ID, got: {citation.id!r}"
                 )
         return v
 
@@ -108,7 +113,10 @@ def validate_output(raw: dict, region: str) -> AlertOutput:
         return AlertOutput.model_construct(
             severity="INSUFFICIENT_DATA",
             summary="Output validation failed — safe fallback response.",
-            source_citations=["FALLBACK:validation-failed"],
+            source_citations=[Citation.model_construct(
+                id="FALLBACK:validation-failed",
+                description="Output validation failed — safe fallback.",
+            )],
             region=region,
             timestamp=datetime.utcnow(),
         )
