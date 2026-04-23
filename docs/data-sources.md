@@ -21,46 +21,82 @@ All credentials stored in .env — never hardcoded.
 
 ## GDELT Cloud (Conflict Events — active source)
 
-**Base URL:** https://api.gdeltproject.org/api/v2/geo/geo (event geo API)
+**Base URL:** `https://gdeltcloud.com/api/v2/events`
 
-**Auth:** API key — pass as `key=` query parameter.
+**Auth:** Bearer token — sent as `Authorization: Bearer {GDELT_CLOUD_API_KEY}` header.
 Key stored in `.env` as `GDELT_CLOUD_API_KEY`.
 
-**Role:** Real-time conflict event data, replacing ACLED as the primary
-structured event source. Provides geolocated events with actor and
-event-type fields that feed directly into severity scoring.
+**Role:** Real-time conflict event data. Provides geolocated events with
+actor and event-type fields that feed directly into severity scoring.
 
-**Key fields used:**
-- eventid — unique event identifier (used as source citation)
-- dateadded — date of event
-- eventcode — CAMEO event code (maps to conflict type)
-- actor1name, actor2name — parties involved
-- actioncountry — country ISO code
-- actiongeo_fullname — human-readable location
-- actiongeo_lat, actiongeo_long — for map markers
-- goldsteinscale — conflict intensity score (-10 to +10)
-- numarticles — media salience weight
+**Query parameters sent by FocalPoint:**
+- `country` — country name (e.g. `Palestine`)
+- `event_family=conflict`
+- `has_fatalities=true` — filter to events with confirmed casualties
+- `sort=recent`
+- `limit` — 20 for backend, 10 for on-device
 
-**Key endpoints:**
-- Event geo API: /api/v2/geo/geo
+Note: `has_fatalities=true` can return 0 results for some countries/periods.
+Remove the filter if needed and rely on the `fatalities` field being `null`
+rather than absent.
 
-**Pagination:**
-Use `page=` parameter. FocalPoint uses maxrows=20 for backend context,
-maxrows=10 for on-device context.
-
-**Example query (recent conflict events for a country):**
+**Real API response structure (confirmed from live curl):**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "conflict_...",
+      "event_date": "2026-04-23",
+      "category": "Armed Clash",
+      "subcategory": "Armed clash",
+      "fatalities": 2,
+      "summary": "...",
+      "geo": {
+        "country": "...",
+        "admin1": "...",
+        "location": "...",
+        "latitude": 32.009,
+        "longitude": 35.311
+      },
+      "actors": [
+        {"name": "...", "country": "...", "role": "actor1"},
+        {"name": "...", "country": "...", "role": "actor2"}
+      ],
+      "metrics": {
+        "significance": 0.374,
+        "goldstein_scale": -9,
+        "confidence": 0.83,
+        "article_count": 1
+      }
+    }
+  ]
+}
 ```
-GET https://api.gdeltproject.org/api/v2/geo/geo
-    ?query=conflict+Syria&mode=pointdata&maxrows=20
-    &timespan=24H&format=json
-    &key={GDELT_CLOUD_API_KEY}
+
+**Field mapping to GdeltCloudEvent:**
+- `data[]` — top-level list key (not `events`)
+- `category` → `event_type`
+- `subcategory` → `sub_event_type`
+- `fatalities` — top-level int, `None` ≠ zero
+- `geo.latitude/longitude/country/admin1/location` — nested object
+- `actors[].role` — `"actor1"` or `"actor2"` used to identify parties
+- `metrics.confidence` — confidence score (not top-level)
+- `metrics.goldstein_scale` — conflict intensity -10 to +10
+
+**Example query (recent conflict events for Palestine):**
+```
+GET https://gdeltcloud.com/api/v2/events
+    ?country=Palestine&event_family=conflict&sort=recent&limit=20
+Authorization: Bearer {GDELT_CLOUD_API_KEY}
 ```
 
 **Free tier:** 100 queries/month. Cache aggressively — see caching.md.
 
-**Pydantic model:** backend/ingestion/gdelt_cloud_connector.py → GdeltCloudEvent
+**Pydantic model:** `backend/ingestion/gdeltcloud_connector.py` → `GdeltCloudEvent`
+(with nested `GdeltCloudGeo`, `GdeltCloudActor`, `GdeltCloudMetrics`)
 
-**Redis key pattern:** gdelt_cloud:{query_hash}:{timespan}
+**Redis key pattern:** `gdeltcloud:{country}:{days}`
 **TTL:** 28800 seconds (8 hours — preserves free-tier quota)
 
 ---
