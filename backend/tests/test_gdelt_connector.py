@@ -24,6 +24,8 @@ from backend.ingestion.gdelt_connector import (
     GdeltArticle,
     GdeltConnector,
     GdeltResponse,
+    _MAX_RETRIES,
+    _RETRY_DELAY_S,
     _parse_aggregate_tone,
     _query_hash,
 )
@@ -594,12 +596,12 @@ class TestEmptyResponse:
 
 
 # ---------------------------------------------------------------------------
-# HTTP error propagation
+# HTTP errors — exhausted retries return empty GdeltResponse
 # ---------------------------------------------------------------------------
 
 
 class TestHttpErrors:
-    async def test_api_http_error_propagates(
+    async def test_api_http_error_returns_empty_response(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
@@ -608,25 +610,128 @@ class TestHttpErrors:
             "503", request=MagicMock(), response=MagicMock()
         )
 
-        with patch(
-            "backend.ingestion.gdelt_connector.httpx.AsyncClient",
-            return_value=mock_http_client,
-        ):
-            connector = GdeltConnector(redis_client=mock_redis)
-            with pytest.raises(httpx.HTTPStatusError):
-                await connector.fetch_articles("conflict Gaza")
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            with patch("backend.ingestion.gdelt_connector.asyncio.sleep"):
+                connector = GdeltConnector(redis_client=mock_redis)
+                result = await connector.fetch_articles("conflict Gaza")
 
-    async def test_network_error_propagates(
+        assert result.articles == []
+        assert result.aggregate_tone == 0.0
+
+    async def test_network_error_returns_empty_response(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
-        mock_http_client.get.side_effect = httpx.ConnectError("timeout")
+        mock_http_client.get.side_effect = httpx.ConnectError("unreachable")
 
-        with patch(
-            "backend.ingestion.gdelt_connector.httpx.AsyncClient",
-            return_value=mock_http_client,
-        ):
-            connector = GdeltConnector(redis_client=mock_redis)
-            with pytest.raises(httpx.ConnectError):
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            with patch("backend.ingestion.gdelt_connector.asyncio.sleep"):
+                connector = GdeltConnector(redis_client=mock_redis)
+                result = await connector.fetch_articles("conflict Gaza")
+
+        assert result.articles == []
+        assert result.aggregate_tone == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Retry logic
+# ---------------------------------------------------------------------------
+
+
+class TestRetry:
+    async def test_all_retries_exhausted_returns_empty_gdelt_response(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        mock_http_client.get.side_effect = httpx.ConnectError("down")
+
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            with patch("backend.ingestion.gdelt_connector.asyncio.sleep"):
+                connector = GdeltConnector(redis_client=mock_redis)
+                result = await connector.fetch_articles("conflict Gaza")
+
+        assert isinstance(result, GdeltResponse)
+        assert result.articles == []
+        assert result.aggregate_tone == 0.0
+
+    async def test_retry_attempts_total_is_max_retries_plus_one(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        """Initial attempt + _MAX_RETRIES retries = _MAX_RETRIES + 1 total GET calls."""
+        mock_http_client.get.side_effect = httpx.ConnectError("down")
+
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            with patch("backend.ingestion.gdelt_connector.asyncio.sleep"):
+                connector = GdeltConnector(redis_client=mock_redis)
                 await connector.fetch_articles("conflict Gaza")
+
+        assert mock_http_client.get.call_count == _MAX_RETRIES + 1
+
+    async def test_sleep_called_between_retries(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        """asyncio.sleep must be called _MAX_RETRIES times (not after the final failure)."""
+        mock_http_client.get.side_effect = httpx.ConnectError("down")
+
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            with patch("backend.ingestion.gdelt_connector.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                connector = GdeltConnector(redis_client=mock_redis)
+                await connector.fetch_articles("conflict Gaza")
+
+        assert mock_sleep.call_count == _MAX_RETRIES
+        mock_sleep.assert_called_with(_RETRY_DELAY_S)
+
+    async def test_sleep_delay_is_two_seconds(self) -> None:
+        assert _RETRY_DELAY_S == 2
+
+    async def test_max_retries_is_three(self) -> None:
+        assert _MAX_RETRIES == 3
+
+    async def test_succeeds_on_retry_after_initial_failure(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        articles_response: MagicMock,
+        tone_response: MagicMock,
+    ) -> None:
+        """First GET fails, second attempt succeeds — result is the real response."""
+        call_count = 0
+
+        def _get_side_effect(url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.ConnectError("transient failure")
+            mode = kwargs.get("params", {}).get("mode", "artlist")
+            return tone_response if mode == "timelinetone" else articles_response
+
+        mock_http_client.get = AsyncMock(side_effect=_get_side_effect)
+
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            with patch("backend.ingestion.gdelt_connector.asyncio.sleep"):
+                connector = GdeltConnector(redis_client=mock_redis)
+                result = await connector.fetch_articles("conflict Gaza")
+
+        assert len(result.articles) == 1
+        assert result.articles[0].domain == "reuters.com"
+
+    async def test_no_redis_write_on_retry_exhaustion(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        """When all retries fail, nothing should be written to Redis."""
+        mock_http_client.get.side_effect = httpx.ConnectError("down")
+
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            with patch("backend.ingestion.gdelt_connector.asyncio.sleep"):
+                connector = GdeltConnector(redis_client=mock_redis)
+                await connector.fetch_articles("conflict Gaza")
+
+        mock_redis.set.assert_not_called()
