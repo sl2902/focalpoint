@@ -21,8 +21,8 @@ All TTLs are aligned to the natural update frequency of each source.
 
 | Source           | Redis Key Pattern | TTL | Rationale |
 |------------------|-----------------|-----|-----------|
-| GDELT Cloud      | gdelt_cloud:{query_hash}:{timespan} | 900s | Matches GDELT 15min update cadence |
-| GDELT Doc API    | gdelt:{query_hash}:{timespan} | 900s | Matches GDELT 15min update cadence |
+| GDELT Cloud      | gdelt_cloud:{query_hash}:{timespan} | 28800s | Free tier is 100 queries/month — 8h TTL keeps usage within quota |
+| GDELT Doc API    | gdelt:{query_hash}:{timespan} | 900s | Matches GDELT 15min update cadence; artlist + timelinetone cached together |
 
 Note: CPJ data is loaded from a local static CSV at startup and
 held in memory. No Redis caching needed for CPJ.

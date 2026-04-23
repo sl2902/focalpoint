@@ -56,10 +56,12 @@ GET https://api.gdeltproject.org/api/v2/geo/geo
     &key={GDELT_CLOUD_API_KEY}
 ```
 
+**Free tier:** 100 queries/month. Cache aggressively — see caching.md.
+
 **Pydantic model:** backend/ingestion/gdelt_cloud_connector.py → GdeltCloudEvent
 
 **Redis key pattern:** gdelt_cloud:{query_hash}:{timespan}
-**TTL:** 900 seconds (15 minutes — matches GDELT update cadence)
+**TTL:** 28800 seconds (8 hours — preserves free-tier quota)
 
 ---
 
@@ -97,6 +99,13 @@ GET https://api.gdeltproject.org/api/v2/geo/geo
 - language — article language
 - tone — sentiment score (negative = more hostile/dangerous coverage)
 - domain — publisher domain
+
+**Two-call fetch:** Every fetch makes two API calls — `mode=artlist` returns
+the article list; a separate `mode=timelinetone` call returns a 15-minute
+resolution time series from which `aggregate_tone` (mean of non-zero windows)
+is computed. Both results are packed into a single `GdeltResponse` and cached
+together under one Redis key, so callers always receive articles and tone in
+one object.
 
 **Doc API query parameters:**
 - query — keyword or phrase search

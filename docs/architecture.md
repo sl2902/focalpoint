@@ -82,9 +82,12 @@ Applies severity scoring logic.
 Produces final SeverityAlert with GREEN/AMBER/RED/CRITICAL level.
 
 Scoring inputs:
-- Fatality count and recency (ACLED)
-- Event type — battles weighted higher than protests
-- GDELT tone score — negative tone escalates severity
+- Fatality count and recency (GDELT Cloud) — exponential decay with 7-day
+  half-life applied per event before bucketing: weight = 2^(-days/7),
+  so an event 7 days old contributes 50% of its raw fatality count
+- Event type — battles weighted higher than protests (GDELT Cloud CAMEO codes)
+- GDELT Doc API aggregate_tone — negative tone escalates severity;
+  derived from timelinetone endpoint, mean of non-zero 15-min windows
 - Historical journalist incident rate for country (CPJ)
 - RSF press freedom baseline for country
 - Proximity to journalist watch zone
@@ -110,7 +113,7 @@ All data comes from FastAPI backend.
 On-device Gemma 4 (E2B/E4B):
 - Handles queries when connectivity is limited
 - Uses cached local data from Expo SQLite
-- Smaller context window — max 10 ACLED + 5 GDELT events
+- Smaller context window — max 10 GDELT Cloud events + 5 GDELT Doc API articles
 
 Screens:
 - Feed: proactive severity-graded alert stream
@@ -128,10 +131,10 @@ if connectivity == OFFLINE:
     context = local SQLite cache
 elif query_complexity == SIMPLE:
     use E2B/E4B on-device
-    context = last 10 ACLED + 5 GDELT from cache
+    context = last 10 GDELT Cloud events + 5 GDELT Doc API articles from cache
 else:
     use 26B via backend
-    context = last 20 ACLED + 10 GDELT fresh from Redis
+    context = last 20 GDELT Cloud events + 10 GDELT Doc API articles fresh from Redis
 ```
 
 ## Deployment
