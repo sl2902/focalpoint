@@ -7,23 +7,23 @@ reasoning, and mobile client. These layers are strictly decoupled.
 The mobile app never communicates with data APIs directly.
 
 ```
-[ACLED API] ──┐
-[GDELT API] ──┤──► [Ingestion Layer] ──► [Redis Cache] ──► [Processors]
-[CPJ local]──┤                                               │
-[RSF Index]──┘                                               ▼
-                                                     [Gemma 4 — 26B]
-                                                             │
-                                                             ▼
-                                                    [Alert Scoring]
-                                                             │
-                                                             ▼
-                                              [FastAPI REST Endpoints]
-                                                             │
-                                              ┌──────────────┘
-                                              ▼
-                                      [Expo Mobile App]
-                                      [Gemma 4 E2B/E4B]  ← on-device
-                                      [Expo SQLite Cache]
+[GDELT Cloud API] ─┐
+[GDELT Doc API]  ──┤──► [Ingestion Layer] ──► [Redis Cache] ──► [Processors]
+[CPJ local]      ──┤                                               │
+[RSF Index]      ──┘                                               ▼
+                                                         [Gemma 4 — 26B]
+                                                                   │
+                                                                   ▼
+                                                          [Alert Scoring]
+                                                                   │
+                                                                   ▼
+                                                    [FastAPI REST Endpoints]
+                                                                   │
+                                                    ┌──────────────┘
+                                                    ▼
+                                            [Expo Mobile App]
+                                            [Gemma 4 E2B/E4B]  ← on-device
+                                            [Expo SQLite Cache]
 ```
 
 ## Layer 1 — Data Ingestion (backend/ingestion/)
@@ -33,10 +33,11 @@ All connectors use cursor-based pagination. Output is always a
 validated Pydantic model.
 
 Files:
-- acled_connector.py
-- gdelt_connector.py
+- gdelt_cloud_connector.py    # conflict events (replaces ACLED)
+- gdelt_connector.py          # news sentiment via GDELT Doc API
 - cpj_connector.py
 - rsf_connector.py
+- acled_connector_disabled.py # preserved — reactivate if API access granted
 
 Each connector:
 1. Fetches from API with cursor pagination

@@ -5,88 +5,85 @@
 FocalPoint uses four data sources. Each has a distinct role.
 No source duplicates another's function.
 
-| Source | Role | Update Frequency | Auth |
-|--------|------|-----------------|------|
-| ACLED  | Real-time conflict events | Continuous | API key |
-| GDELT  | News sentiment + media signals | Every 15 min | None |
-| CPJ    | Historical journalist incidents | Daily | API key |
-| RSF    | Country press freedom baseline | Annual | None |
+| Source       | Role | Update Frequency | Auth |
+|--------------|------|-----------------|------|
+| GDELT Cloud  | Real-time conflict events | Continuous | API key |
+| GDELT Doc API | News sentiment + media signals | Every 15 min | None |
+| CPJ          | Historical journalist incidents | Daily | None (local CSV) |
+| RSF          | Country press freedom baseline | Annual | None |
+
+ACLED is preserved as `backend/ingestion/acled_connector_disabled.py` and
+can be reactivated if API access is granted. See the ACLED section below.
 
 All credentials stored in .env — never hardcoded.
 
 ---
 
-## ACLED (Armed Conflict Location & Event Data)
+## GDELT Cloud (Conflict Events — active source)
 
-**Base URL:** https://api.acleddata.com/acled/read
+**Base URL:** https://api.gdeltproject.org/api/v2/geo/geo (event geo API)
 
-**Auth:** OAuth2 Bearer token — not a static API key.
-You POST your credentials to the token URL to receive a short-lived
-access token, then pass it as a Bearer header on every API request.
+**Auth:** API key — pass as `key=` query parameter.
+Key stored in `.env` as `GDELT_CLOUD_API_KEY`.
 
-Token URL: settings.ACLED_TOKEN_URL  # see .env
-
-```python
-# Step 1 — get token
-response = requests.post(
-    "https://acleddata.com/oauth/token",
-    headers={"Content-Type": "application/x-www-form-urlencoded"},
-    data={
-        "username": settings.ACLED_USERNAME,
-        "password": settings.ACLED_PASSWORD,
-        "grant_type": "password",
-        "client_id": "acled",
-    }
-)
-token = response.json()["access_token"]
-
-# Step 2 — use token on every request
-headers = {
-    "Authorization": f"Bearer {token}",
-    "Content-Type": "application/json",
-}
-```
-
-Tokens expire — implement token refresh logic in the connector.
-Cache the token in Redis with TTL slightly shorter than expiry.
+**Role:** Real-time conflict event data, replacing ACLED as the primary
+structured event source. Provides geolocated events with actor and
+event-type fields that feed directly into severity scoring.
 
 **Key fields used:**
-- event_id_cnty — unique event identifier (used as source citation)
-- event_date — date of event
-- event_type — Battles, Explosions/Remote violence, Violence against civilians, etc.
-- actor1, actor2 — parties involved
-- country, location — geography
-- latitude, longitude — for map markers
-- fatalities — integer count
-- notes — human-readable event description
+- eventid — unique event identifier (used as source citation)
+- dateadded — date of event
+- eventcode — CAMEO event code (maps to conflict type)
+- actor1name, actor2name — parties involved
+- actioncountry — country ISO code
+- actiongeo_fullname — human-readable location
+- actiongeo_lat, actiongeo_long — for map markers
+- goldsteinscale — conflict intensity score (-10 to +10)
+- numarticles — media salience weight
 
 **Key endpoints:**
-- ACLED event data: /acled/read
-- CAST forecasts: /cast/read (regional conflict forecasts)
+- Event geo API: /api/v2/geo/geo
 
 **Pagination:**
-Use &page=1, &page=2 etc. Default limit 5000 rows.
-FocalPoint uses limit=20 for alert generation context.
+Use `page=` parameter. FocalPoint uses maxrows=20 for backend context,
+maxrows=10 for on-device context.
 
-**Example query (recent events in a country):**
+**Example query (recent conflict events for a country):**
 ```
-GET https://acleddata.com/api/acled/read?_format=json
-    &country=Palestine&limit=20&page=1
-    &fields=event_id_cnty|event_date|event_type|fatalities
-    |latitude|longitude|notes
-    &event_date=2026-04-01|2026-04-23&event_date_where=BETWEEN
-
-Headers: Authorization: Bearer {token}
+GET https://api.gdeltproject.org/api/v2/geo/geo
+    ?query=conflict+Syria&mode=pointdata&maxrows=20
+    &timespan=24H&format=json
+    &key={GDELT_CLOUD_API_KEY}
 ```
 
-**Pydantic model:** backend/ingestion/acled_connector.py → AcledEvent
+**Pydantic model:** backend/ingestion/gdelt_cloud_connector.py → GdeltCloudEvent
 
-**Redis key pattern:** acled:{country}:{page}
-**TTL:** 3600 seconds (1 hour)
+**Redis key pattern:** gdelt_cloud:{query_hash}:{timespan}
+**TTL:** 900 seconds (15 minutes — matches GDELT update cadence)
 
 ---
 
-## GDELT 2.0 (Global Database of Events, Language, and Tone)
+## ACLED (Armed Conflict Location & Event Data) — DISABLED
+
+> **Status: disabled.** The ACLED OAuth2 API requires institutional access
+> that has not been granted. The connector is preserved in full at
+> `backend/ingestion/acled_connector_disabled.py` and its tests at
+> `backend/tests/test_acled_connector_disabled.py`.
+>
+> To reactivate: rename the file to `acled_connector.py`, restore the
+> ACLED_* env vars in `.env` (template kept commented in `.env.example`),
+> and re-enable the ACLED import in `backend/alerts/severity_scorer.py`.
+
+**Would have used:** https://api.acleddata.com/acled/read (OAuth2 Bearer token)
+
+**Credentials needed (kept commented in .env.example):**
+- ACLED_USERNAME
+- ACLED_PASSWORD
+- ACLED_TOKEN_URL = https://acleddata.com/oauth/token
+
+---
+
+## GDELT 2.0 Doc API (News Sentiment — active source)
 
 **Base URL:** https://api.gdeltproject.org/api/v2/doc/doc
 
@@ -246,11 +243,14 @@ Imported directly — no loading, no caching, no Pydantic model.
 ## Environment Variables Required
 
 ```
-ACLED_USERNAME=
-ACLED_PASSWORD=
-ACLED_TOKEN_URL=https://acleddata.com/oauth/token
-GOOGLE_AI_STUDIO_API_KEY=
+GDELT_CLOUD_API_KEY=          # GDELT Cloud conflict events API key
+GOOGLE_AI_STUDIO_API_KEY=     # Gemini API key — covers Gemma 4 models
 REDIS_URL=redis://localhost:6379
+
+# ACLED credentials — kept for reactivation if API access is granted
+# ACLED_USERNAME=
+# ACLED_PASSWORD=
+# ACLED_TOKEN_URL=https://acleddata.com/oauth/token
 
 Note: GOOGLE_AI_STUDIO_API_KEY is a Gemini API key from
 https://aistudio.google.com — it covers both Gemini and Gemma 4 models.

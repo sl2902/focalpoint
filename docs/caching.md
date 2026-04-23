@@ -19,10 +19,10 @@ Sits between the ingestion connectors and the data source APIs.
 Prevents redundant API calls. Protects against rate limits.
 All TTLs are aligned to the natural update frequency of each source.
 
-| Source | Redis Key Pattern | TTL | Rationale |
-|--------|-----------------|-----|-----------|
-| GDELT | gdelt:{query_hash}:{timespan} | 900s | Matches GDELT 15min update cadence |
-| ACLED | acled:{country}:{page} | 3600s | ACLED updates continuously but not faster than hourly for most regions |
+| Source           | Redis Key Pattern | TTL | Rationale |
+|------------------|-----------------|-----|-----------|
+| GDELT Cloud      | gdelt_cloud:{query_hash}:{timespan} | 900s | Matches GDELT 15min update cadence |
+| GDELT Doc API    | gdelt:{query_hash}:{timespan} | 900s | Matches GDELT 15min update cadence |
 
 Note: CPJ data is loaded from a local static CSV at startup and
 held in memory. No Redis caching needed for CPJ.

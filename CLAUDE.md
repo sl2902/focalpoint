@@ -20,9 +20,12 @@ pushing severity-graded alerts rather than waiting to be queried.
 - AI: Gemma 4 via Gemini API (GOOGLE_AI_STUDIO_API_KEY) — model IDs:
        gemma-4-26b-a4b-it (backend), gemma-4-31b-it (backend),
        E2B/E4B weights downloaded for on-device use
-- Data: ACLED API (OAuth2), GDELT 2.0 (no auth), CPJ local CSV at
+- Data: GDELT Cloud conflict events (GDELT_CLOUD_API_KEY), GDELT 2.0 Doc API
+         news sentiment (no auth), CPJ local CSV at
          backend/data/cpj_incidents.csv, RSF hardcoded dict at
          backend/data/rsf_scores.py (180 countries, update annually)
+         Note: ACLED connector preserved as acled_connector_disabled.py —
+         reactivate if API access is granted
 - Maps: MapLibre React Native + OpenStreetMap demo tiles (no key required)
 - Deployment: Backend on Google Cloud Run, Expo for mobile
 
@@ -49,8 +52,8 @@ docs/
 - E2B/E4B: on-device, handles quick queries and offline mode
 - 26B backend: complex multi-source reasoning and alert generation
 - Route based on connectivity status and query complexity
-- On-device context: max 10 ACLED events + 5 GDELT articles
-- Backend context: max 20 ACLED events + 10 GDELT articles
+- On-device context: max 10 GDELT Cloud events + 5 GDELT Doc API articles
+- Backend context: max 20 GDELT Cloud events + 10 GDELT Doc API articles
 - This satisfies the Cactus special technology prize criteria
 
 ## Severity Levels
@@ -70,7 +73,7 @@ docs/
 
 ## Context Grounding
 - Gemma 4 must only reason from retrieved data — never free generation
-- Every alert must cite source: ACLED event ID, GDELT URL, or CPJ ID
+- Every alert must cite source: GDELT Cloud event ID, GDELT Doc API URL, or CPJ ID
 - If insufficient data exists, output "insufficient data" explicitly
 - Cursor-based pagination on all data source queries
 - All retrieval logic lives in backend/ingestion/ only
