@@ -9,6 +9,38 @@ Cache TTL is set to 28800 s (8 hours) to stay within quota.
 Never reduce this TTL without upgrading the API plan.
 
 Redis key pattern : gdeltcloud:{country}:{days}  TTL: 28800 s
+
+Real API response structure (confirmed from live curl):
+  {
+    "success": true,
+    "data": [                    ← top-level key is "data", not "events"
+      {
+        "id": "conflict_...",
+        "event_date": "2026-04-23",
+        "category": "...",       ← our event_type
+        "subcategory": "...",    ← our sub_event_type
+        "fatalities": 2,         ← top-level int
+        "summary": "...",
+        "geo": {                 ← nested object
+          "country": "...",
+          "admin1": "...",
+          "location": "...",
+          "latitude": 32.009,
+          "longitude": 35.311
+        },
+        "actors": [              ← list; extract by role field
+          {"name": "...", "country": "...", "role": "actor1"},
+          {"name": "...", "country": "...", "role": "actor2"}
+        ],
+        "metrics": {             ← nested object
+          "significance": 0.374,
+          "goldstein_scale": -9,
+          "confidence": 0.83,
+          "article_count": 1
+        }
+      }
+    ]
+  }
 """
 
 from __future__ import annotations
@@ -19,11 +51,11 @@ from typing import Any
 import httpx
 import redis.asyncio as aioredis
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from backend.config import settings as _settings
 
-GDELT_CLOUD_BASE_URL = "https://api.gdeltproject.org/api/v2/events/events"
+GDELT_CLOUD_BASE_URL = "https://gdeltcloud.com/api/v2/events"
 
 # 8 hours — preserves the 100 query/month free tier limit.
 # Do NOT lower this without upgrading the API plan.
@@ -31,40 +63,173 @@ GDELT_CLOUD_CACHE_TTL = 28800
 
 
 # ---------------------------------------------------------------------------
-# Pydantic models
+# Public Pydantic models (callers import these)
 # ---------------------------------------------------------------------------
+
+
+class GdeltCloudGeo(BaseModel):
+    """Nested geo block from the GDELT Cloud API."""
+
+    country: str | None = None
+    region: str | None = None
+    admin1: str | None = None       # first-level administrative division
+    location: str | None = None     # human-readable place name
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class GdeltCloudActor(BaseModel):
+    """Single actor entry from the actors list in a GDELT Cloud event."""
+
+    name: str | None = None
+    country: str | None = None
+    role: str | None = None         # "actor1" or "actor2"
+
+
+class GdeltCloudMetrics(BaseModel):
+    """Nested metrics block from the GDELT Cloud API."""
+
+    significance: float | None = None
+    goldstein_scale: float | None = None   # conflict intensity -10 to +10
+    confidence: float | None = None        # 0.0–1.0
+    article_count: int | None = None
 
 
 class GdeltCloudEvent(BaseModel):
     """
-    Single conflict event from the GDELT Cloud Events API.
+    Parsed conflict event from the GDELT Cloud Events API.
 
     Only id and event_date are guaranteed present. All other fields are
-    optional because GDELT Cloud events vary in coverage by region and
-    reporting density. Callers must handle None before using numeric fields.
+    optional because coverage varies by region and reporting density.
+    Callers must handle None before using numeric fields.
+
+    Field mapping from raw API:
+      category    → event_type
+      subcategory → sub_event_type
+      summary     → summary  (free-text description)
+      geo.*       → geo nested object
+      actors[]    → actors list (filter by .role for actor1/actor2)
+      metrics.*   → metrics nested object
     """
 
     id: str
     event_date: str
 
-    disorder_type: str | None = None      # e.g. "Political Violence", "Demonstrations"
-    event_type: str | None = None         # CAMEO-based event description
-    sub_event_type: str | None = None     # more granular classification
-    actor1: str | None = None
-    actor2: str | None = None
-    fatalities: int | None = None         # None means unreported, not zero
-    latitude: float | None = None
-    longitude: float | None = None
-    country: str | None = None
-    admin1: str | None = None             # first-level admin division
-    location: str | None = None
-    notes: str | None = None
-    confidence: int | None = None         # GDELT confidence score 0–100
+    event_type: str | None = None       # from API field "category"
+    sub_event_type: str | None = None   # from API field "subcategory"
+    fatalities: int | None = None       # top-level in API; None ≠ zero
+    has_fatalities: bool | None = None
+    title: str | None = None
+    summary: str | None = None
+
+    geo: GdeltCloudGeo | None = None
+    actors: list[GdeltCloudActor] = []
+    metrics: GdeltCloudMetrics | None = None
 
 
 class GdeltCloudResponse(BaseModel):
+    """Wrapper returned by the connector after parsing the raw API response."""
+
     events: list[GdeltCloudEvent] = []
-    count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Internal raw-API models (used only inside this module for parsing)
+# ---------------------------------------------------------------------------
+
+
+class _RawGeo(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    country: str | None = None
+    region: str | None = None
+    admin1: str | None = None
+    location: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+class _RawActor(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: str | None = None
+    country: str | None = None
+    role: str | None = None
+
+
+class _RawMetrics(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    significance: float | None = None
+    goldstein_scale: float | None = None
+    confidence: float | None = None
+    article_count: int | None = None
+
+
+class _RawEvent(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str
+    event_date: str
+    category: str | None = None
+    subcategory: str | None = None
+    fatalities: int | None = None
+    has_fatalities: bool | None = None
+    title: str | None = None
+    summary: str | None = None
+    geo: _RawGeo | None = None
+    actors: list[_RawActor] = []
+    metrics: _RawMetrics | None = None
+
+
+class _RawApiResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    success: bool = True
+    data: list[_RawEvent] = []
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_event(raw: _RawEvent) -> GdeltCloudEvent:
+    """Convert a raw API event into a clean GdeltCloudEvent."""
+    geo = (
+        GdeltCloudGeo(
+            country=raw.geo.country,
+            region=raw.geo.region,
+            admin1=raw.geo.admin1,
+            location=raw.geo.location,
+            latitude=raw.geo.latitude,
+            longitude=raw.geo.longitude,
+        )
+        if raw.geo
+        else None
+    )
+    metrics = (
+        GdeltCloudMetrics(
+            significance=raw.metrics.significance,
+            goldstein_scale=raw.metrics.goldstein_scale,
+            confidence=raw.metrics.confidence,
+            article_count=raw.metrics.article_count,
+        )
+        if raw.metrics
+        else None
+    )
+    actors = [
+        GdeltCloudActor(name=a.name, country=a.country, role=a.role)
+        for a in raw.actors
+    ]
+    return GdeltCloudEvent(
+        id=raw.id,
+        event_date=raw.event_date,
+        event_type=raw.category,
+        sub_event_type=raw.subcategory,
+        fatalities=raw.fatalities,
+        has_fatalities=raw.has_fatalities,
+        title=raw.title,
+        summary=raw.summary,
+        geo=geo,
+        actors=actors,
+        metrics=metrics,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -106,15 +271,16 @@ class GdeltCloudConnector:
         Return GDELT Cloud conflict events for *country*.
 
         Results are served from Redis when available. On cache miss the
-        connector calls the API, validates the payload with Pydantic,
-        writes to Redis with a 28800 s TTL, and returns the events.
+        connector calls the API, parses the nested response structure into
+        GdeltCloudEvent models, writes to Redis with a 28800 s TTL, and
+        returns the events.
 
         IMPORTANT: Each cache miss consumes one of the 100 free monthly
         quota. The 8-hour TTL is intentional — do not reduce it.
 
         Args:
-            country: ISO country name or code recognised by the GDELT API.
-            days:    Lookback window in days (default 1).
+            country: Country name recognised by the GDELT Cloud API.
+            days:    Used as cache key discriminator only — not sent to API.
             limit:   Max events to return (default 20).
         """
         cache_key = f"gdeltcloud:{country}:{days}"
@@ -130,9 +296,10 @@ class GdeltCloudConnector:
 
         params: dict[str, Any] = {
             "country": country,
-            "days": days,
+            "event_family": "conflict",
+            "has_fatalities": "true",
+            "sort": "recent",
             "limit": limit,
-            "format": "json",
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -143,9 +310,11 @@ class GdeltCloudConnector:
             )
             response.raise_for_status()
 
-        gdelt_resp = GdeltCloudResponse(**response.json())
+        api_resp = _RawApiResponse(**response.json())
+        events = [_parse_event(raw) for raw in api_resp.data]
+
         logger.info(
-            f"GDELT Cloud: fetched {gdelt_resp.count} events"
+            f"GDELT Cloud: fetched {len(events)} events"
             f" for {country!r}, days={days}"
             f" — quota reminder: 100 queries/month free tier"
         )
@@ -154,10 +323,10 @@ class GdeltCloudConnector:
             try:
                 await self._redis.set(
                     cache_key,
-                    json.dumps([e.model_dump() for e in gdelt_resp.events]),
+                    json.dumps([e.model_dump() for e in events]),
                     ex=GDELT_CLOUD_CACHE_TTL,
                 )
             except Exception as exc:
                 logger.warning(f"Redis write failed: {exc}")
 
-        return gdelt_resp.events
+        return events

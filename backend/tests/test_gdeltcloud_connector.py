@@ -13,8 +13,11 @@ import pytest
 
 from backend.ingestion.gdeltcloud_connector import (
     GDELT_CLOUD_CACHE_TTL,
+    GdeltCloudActor,
     GdeltCloudConnector,
     GdeltCloudEvent,
+    GdeltCloudGeo,
+    GdeltCloudMetrics,
     GdeltCloudResponse,
 )
 
@@ -22,28 +25,72 @@ from backend.ingestion.gdeltcloud_connector import (
 # Shared test data
 # ---------------------------------------------------------------------------
 
-SAMPLE_EVENT: dict = {
-    "id": "GDELT20260423001",
+# Raw API response shape — matches what https://gdeltcloud.com/api/v2/events
+# actually returns.  "category" and "subcategory" are the raw API field names;
+# the connector maps them to event_type / sub_event_type.
+SAMPLE_RAW_EVENT: dict = {
+    "id": "conflict_001",
     "event_date": "2026-04-23",
-    "disorder_type": "Political Violence",
-    "event_type": "Armed Clash",
-    "sub_event_type": "Armed clash",
-    "actor1": "Syrian Armed Forces",
-    "actor2": "Opposition Forces",
+    "category": "Armed Clash",
+    "subcategory": "Armed clash",
     "fatalities": 3,
-    "latitude": 36.2,
-    "longitude": 37.1,
-    "country": "Syria",
-    "admin1": "Aleppo",
-    "location": "Northern Aleppo",
-    "notes": "Clashes reported near checkpoint.",
-    "confidence": 85,
+    "has_fatalities": True,
+    "title": "Clashes reported near Aleppo",
+    "summary": "Clashes reported near checkpoint.",
+    "geo": {
+        "country": "Syria",
+        "admin1": "Aleppo",
+        "location": "Northern Aleppo",
+        "latitude": 36.2,
+        "longitude": 37.1,
+    },
+    "actors": [
+        {"name": "Syrian Armed Forces", "country": "Syria", "role": "actor1"},
+        {"name": "Opposition Forces", "country": "Syria", "role": "actor2"},
+    ],
+    "metrics": {
+        "significance": 0.374,
+        "goldstein_scale": -9.0,
+        "confidence": 0.83,
+        "article_count": 1,
+    },
 }
 
+# Matches the top-level shape returned by the real API.
 SAMPLE_API_RESPONSE: dict = {
-    "events": [SAMPLE_EVENT],
-    "count": 1,
+    "success": True,
+    "data": [SAMPLE_RAW_EVENT],
 }
+
+# The parsed GdeltCloudEvent produced after the connector processes
+# SAMPLE_RAW_EVENT through _parse_event().
+PARSED_EVENT = GdeltCloudEvent(
+    id="conflict_001",
+    event_date="2026-04-23",
+    event_type="Armed Clash",
+    sub_event_type="Armed clash",
+    fatalities=3,
+    has_fatalities=True,
+    title="Clashes reported near Aleppo",
+    summary="Clashes reported near checkpoint.",
+    geo=GdeltCloudGeo(
+        country="Syria",
+        admin1="Aleppo",
+        location="Northern Aleppo",
+        latitude=36.2,
+        longitude=37.1,
+    ),
+    actors=[
+        GdeltCloudActor(name="Syrian Armed Forces", country="Syria", role="actor1"),
+        GdeltCloudActor(name="Opposition Forces", country="Syria", role="actor2"),
+    ],
+    metrics=GdeltCloudMetrics(
+        significance=0.374,
+        goldstein_scale=-9.0,
+        confidence=0.83,
+        article_count=1,
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -91,11 +138,19 @@ def mock_http_client(events_response: MagicMock) -> AsyncMock:
 
 class TestGdeltCloudEvent:
     def test_valid_full_event(self) -> None:
-        event = GdeltCloudEvent(**SAMPLE_EVENT)
-        assert event.id == "GDELT20260423001"
+        event = PARSED_EVENT
+        assert event.id == "conflict_001"
+        assert event.event_type == "Armed Clash"
         assert event.fatalities == 3
-        assert event.latitude == 36.2
-        assert event.confidence == 85
+        assert event.geo is not None
+        assert event.geo.latitude == pytest.approx(36.2)
+        assert event.geo.country == "Syria"
+        assert event.metrics is not None
+        assert event.metrics.confidence == pytest.approx(0.83)
+        assert event.metrics.goldstein_scale == pytest.approx(-9.0)
+        assert len(event.actors) == 2
+        assert event.actors[0].role == "actor1"
+        assert event.actors[1].role == "actor2"
 
     def test_only_required_fields(self) -> None:
         event = GdeltCloudEvent(id="MIN001", event_date="2026-04-23")
@@ -103,42 +158,71 @@ class TestGdeltCloudEvent:
         assert event.event_date == "2026-04-23"
         assert event.fatalities is None
         assert event.event_type is None
-        assert event.actor1 is None
-        assert event.country is None
+        assert event.geo is None
+        assert event.actors == []
+        assert event.metrics is None
 
     def test_all_optional_fields_default_to_none(self) -> None:
         event = GdeltCloudEvent(id="X", event_date="2026-01-01")
         for field in (
-            "disorder_type", "event_type", "sub_event_type", "actor1", "actor2",
-            "fatalities", "latitude", "longitude", "country", "admin1",
-            "location", "notes", "confidence",
+            "event_type", "sub_event_type", "fatalities", "has_fatalities",
+            "title", "summary", "geo", "metrics",
         ):
             assert getattr(event, field) is None, f"{field} should default to None"
+        assert event.actors == []
 
     def test_zero_fatalities_accepted(self) -> None:
         event = GdeltCloudEvent(id="X", event_date="2026-04-23", fatalities=0)
         assert event.fatalities == 0
 
     def test_negative_goldstein_scale_accepted(self) -> None:
-        event = GdeltCloudEvent(id="X", event_date="2026-04-23", latitude=-33.9)
-        assert event.latitude == pytest.approx(-33.9)
+        event = GdeltCloudEvent(
+            id="X",
+            event_date="2026-04-23",
+            metrics=GdeltCloudMetrics(goldstein_scale=-9.0),
+        )
+        assert event.metrics is not None
+        assert event.metrics.goldstein_scale == pytest.approx(-9.0)
+
+    def test_nested_geo_model(self) -> None:
+        geo = GdeltCloudGeo(latitude=36.2, longitude=37.1, country="Syria")
+        event = GdeltCloudEvent(id="GEO001", event_date="2026-04-23", geo=geo)
+        assert event.geo is not None
+        assert event.geo.latitude == pytest.approx(36.2)
+        assert event.geo.country == "Syria"
+
+    def test_nested_metrics_model(self) -> None:
+        metrics = GdeltCloudMetrics(confidence=0.9, article_count=5)
+        event = GdeltCloudEvent(id="MET001", event_date="2026-04-23", metrics=metrics)
+        assert event.metrics is not None
+        assert event.metrics.confidence == pytest.approx(0.9)
+        assert event.metrics.article_count == 5
+
+    def test_actors_list_populated(self) -> None:
+        actors = [
+            GdeltCloudActor(name="Group A", role="actor1"),
+            GdeltCloudActor(name="Group B", role="actor2"),
+        ]
+        event = GdeltCloudEvent(id="ACT001", event_date="2026-04-23", actors=actors)
+        assert len(event.actors) == 2
+        assert event.actors[0].name == "Group A"
+        assert event.actors[1].role == "actor2"
 
 
 class TestGdeltCloudResponse:
     def test_wraps_event_list(self) -> None:
-        resp = GdeltCloudResponse(**SAMPLE_API_RESPONSE)
-        assert resp.count == 1
+        resp = GdeltCloudResponse(events=[PARSED_EVENT])
+        assert len(resp.events) == 1
         assert isinstance(resp.events[0], GdeltCloudEvent)
-        assert resp.events[0].id == "GDELT20260423001"
+        assert resp.events[0].id == "conflict_001"
 
     def test_empty_events_list(self) -> None:
-        resp = GdeltCloudResponse(events=[], count=0)
+        resp = GdeltCloudResponse(events=[])
         assert resp.events == []
 
     def test_defaults_to_empty_list(self) -> None:
         resp = GdeltCloudResponse()
         assert resp.events == []
-        assert resp.count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +247,45 @@ class TestCacheMiss:
             events = await connector.fetch_events("Syria")
 
         assert len(events) == 1
-        assert events[0].id == "GDELT20260423001"
+        assert events[0].id == "conflict_001"
+
+    async def test_returns_gdelt_cloud_event_instances(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            events = await connector.fetch_events("Syria")
+
+        assert isinstance(events[0], GdeltCloudEvent)
+        assert events[0].geo is not None
+        assert events[0].metrics is not None
+        assert len(events[0].actors) == 2
+
+    async def test_category_mapped_to_event_type(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        """API field 'category' must be mapped to GdeltCloudEvent.event_type."""
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            events = await connector.fetch_events("Syria")
+
+        assert events[0].event_type == "Armed Clash"   # from raw "category"
 
     async def test_get_uses_bearer_token(
         self,
@@ -185,7 +307,7 @@ class TestCacheMiss:
             "Authorization": "Bearer test-gdelt-cloud-key"
         }
 
-    async def test_country_and_days_in_params(
+    async def test_confirmed_query_params_sent(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
@@ -203,8 +325,13 @@ class TestCacheMiss:
         _, kwargs = mock_http_client.get.call_args
         params = kwargs["params"]
         assert params["country"] == "Syria"
-        assert params["days"] == 3
+        assert params["event_family"] == "conflict"
+        assert params["has_fatalities"] == "true"
+        assert params["sort"] == "recent"
         assert params["limit"] == 10
+        # days is used for the cache key only — not forwarded to the API
+        assert "days" not in params
+        assert "format" not in params
 
     async def test_events_written_to_redis_with_correct_ttl(
         self,
@@ -219,14 +346,16 @@ class TestCacheMiss:
             connector = GdeltCloudConnector(
                 redis_client=mock_redis, app_settings=mock_settings
             )
-            await connector.fetch_events("Syria", days=1)
+            events = await connector.fetch_events("Syria", days=1)
 
-        expected_payload = json.dumps(
-            [GdeltCloudEvent(**SAMPLE_EVENT).model_dump()]
-        )
-        mock_redis.set.assert_called_once_with(
-            "gdeltcloud:Syria:1", expected_payload, ex=GDELT_CLOUD_CACHE_TTL
-        )
+        # Verify the key and TTL — payload is validated via round-trip
+        call_args = mock_redis.set.call_args
+        assert call_args[0][0] == "gdeltcloud:Syria:1"
+        assert call_args[1]["ex"] == GDELT_CLOUD_CACHE_TTL
+        # Payload must be JSON-deserializable back to a list of event dicts
+        payload = json.loads(call_args[0][1])
+        assert len(payload) == 1
+        assert payload[0]["id"] == "conflict_001"
 
     async def test_cache_ttl_is_28800_seconds(self) -> None:
         """8-hour TTL must be enforced to protect the 100 query/month quota."""
@@ -263,7 +392,8 @@ class TestCacheHit:
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
-        mock_redis.get.return_value = json.dumps([SAMPLE_EVENT]).encode()
+        # Cache stores model_dump() output of GdeltCloudEvent
+        mock_redis.get.return_value = json.dumps([PARSED_EVENT.model_dump()]).encode()
 
         with patch(
             "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
@@ -275,7 +405,7 @@ class TestCacheHit:
             events = await connector.fetch_events("Syria")
 
         assert len(events) == 1
-        assert events[0].id == "GDELT20260423001"
+        assert events[0].id == "conflict_001"
         mock_http_client.get.assert_not_called()
 
     async def test_cached_events_deserialised_to_gdelt_cloud_event(
@@ -284,7 +414,7 @@ class TestCacheHit:
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
-        mock_redis.get.return_value = json.dumps([SAMPLE_EVENT]).encode()
+        mock_redis.get.return_value = json.dumps([PARSED_EVENT.model_dump()]).encode()
 
         with patch(
             "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
@@ -296,6 +426,26 @@ class TestCacheHit:
             events = await connector.fetch_events("Syria")
 
         assert isinstance(events[0], GdeltCloudEvent)
+
+    async def test_cached_event_preserves_nested_geo(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        mock_redis.get.return_value = json.dumps([PARSED_EVENT.model_dump()]).encode()
+
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            events = await connector.fetch_events("Syria")
+
+        assert events[0].geo is not None
+        assert events[0].geo.latitude == pytest.approx(36.2)
 
 
 # ---------------------------------------------------------------------------
@@ -437,7 +587,7 @@ class TestHttpErrors:
 
 
 class TestParameters:
-    async def test_default_days_is_one(
+    async def test_default_sort_is_recent(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
@@ -453,7 +603,7 @@ class TestParameters:
             await connector.fetch_events("Syria")
 
         _, kwargs = mock_http_client.get.call_args
-        assert kwargs["params"]["days"] == 1
+        assert kwargs["params"]["sort"] == "recent"
 
     async def test_default_limit_is_twenty(
         self,

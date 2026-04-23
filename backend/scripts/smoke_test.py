@@ -7,17 +7,15 @@ Smoke test — end-to-end data fetch and severity score.
 # This script makes live network calls to external APIs and requires    #
 # real credentials in .env:                                             #
 #                                                                        #
-#   ACLED_USERNAME      — from acleddata.com (register for free)        #
-#   ACLED_PASSWORD      — from acleddata.com                            #
-#   ACLED_TOKEN_URL     — https://acleddata.com/oauth/token             #
+#   GDELT_CLOUD_API_KEY  — from the GDELT Cloud API                    #
 #                                                                        #
-# GDELT requires no credentials. CPJ and RSF are loaded locally.        #
-# Do not run this script in CI — use uv run python -m pytest instead.   #
+# GDELT Doc API requires no credentials. CPJ and RSF are loaded         #
+# locally. Do not run this script in CI — use uv run pytest instead.   #
 ########################################################################
 
 Loads credentials from .env via app Settings, fetches live data from
-ACLED and GDELT (no Redis), runs the severity scorer, and prints a
-human-readable summary.
+GDELT Cloud (conflict events) and GDELT Doc API (news sentiment),
+runs the severity scorer, and prints a human-readable summary.
 
 Usage:
     uv run python backend/scripts/smoke_test.py
@@ -31,7 +29,7 @@ from loguru import logger
 
 from backend.config import settings
 from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
-from backend.ingestion.acled_connector import AcledConnector
+from backend.ingestion.gdeltcloud_connector import GdeltCloudConnector
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
 from backend.alerts.severity_scorer import score_severity
@@ -47,32 +45,33 @@ FETCH_LIMIT = 5
 async def main() -> None:
     print("=" * 60)
     print("FocalPoint smoke test")
-    print(f"ACLED country : {COUNTRY}")
-    print(f"GDELT query   : {GDELT_QUERY!r}  timespan=24H  max={FETCH_LIMIT}")
+    print(f"GDELT Cloud country : {COUNTRY}")
+    print(f"GDELT query         : {GDELT_QUERY!r}  timespan=24H  max={FETCH_LIMIT}")
     print("=" * 60)
 
     # ------------------------------------------------------------------ #
-    # ACLED
+    # GDELT Cloud (conflict events)
     # ------------------------------------------------------------------ #
-    acled = AcledConnector(redis_client=None, app_settings=settings)
-    acled_events = await acled.fetch_events(COUNTRY, limit=FETCH_LIMIT)
+    gdelt_cloud = GdeltCloudConnector(redis_client=None, app_settings=settings)
+    conflict_events = await gdelt_cloud.fetch_events(COUNTRY, days=1, limit=FETCH_LIMIT)
 
-    print(f"\nACLED — {len(acled_events)} events fetched")
+    print(f"\nGDELT Cloud — {len(conflict_events)} events fetched")
     print(f"  {'Date':<12}  {'Type':<35}  {'Fatalities':>10}  Location")
     print(f"  {'-'*12}  {'-'*35}  {'-'*10}  --------")
-    for ev in acled_events:
+    for ev in conflict_events:
         print(
-            f"  {ev.event_date:<12}  {ev.event_type:<35}"
-            f"  {ev.fatalities:>10}  {ev.location}"
+            f"  {ev.event_date:<12}  {(ev.event_type or 'n/a'):<35}"
+            f"  {(ev.fatalities if ev.fatalities is not None else 'n/a'):>10}"
+            f"  {(ev.geo.location if ev.geo else None) or 'n/a'}"
         )
 
     # ------------------------------------------------------------------ #
-    # GDELT
+    # GDELT Doc API (news sentiment)
     # ------------------------------------------------------------------ #
     gdelt = GdeltConnector(redis_client=None)
     gdelt_response = await gdelt.fetch_articles(GDELT_QUERY, maxrecords=FETCH_LIMIT)
 
-    print(f"\nGDELT — {len(gdelt_response.articles)} articles fetched"
+    print(f"\nGDELT Doc API — {len(gdelt_response.articles)} articles fetched"
           f"  (aggregate_tone={gdelt_response.aggregate_tone:+.2f})")
     print(f"  Title")
     print(f"  -----")
@@ -98,7 +97,7 @@ async def main() -> None:
     # Severity scorer
     # ------------------------------------------------------------------ #
     result = score_severity(
-        acled_events=acled_events,
+        conflict_events=conflict_events,
         gdelt_articles=gdelt_response.articles,
         cpj_stats=cpj_stats,
         rsf_press_freedom=rsf_score,

@@ -50,11 +50,6 @@ def make_event(event_type: str, fatalities: int = 0) -> GdeltCloudEvent:
         id="TEST001",
         event_date="2026-04-20",
         event_type=event_type,
-        actor1="Test Actor A",
-        country="Palestine",
-        location="Gaza",
-        latitude=31.5,
-        longitude=34.47,
         fatalities=fatalities,
     )
 
@@ -504,11 +499,6 @@ class TestRecencyDecay:
             id="OLD001",
             event_date="2026-04-13",   # 7 days before _EVENT_DATE
             event_type="Battles",
-            actor1="Actor",
-            country="Palestine",
-            location="Gaza",
-            latitude=31.5,
-            longitude=34.47,
             fatalities=10,
         )
         score = _score_fatalities([old_event], _EVENT_DATE)
@@ -522,11 +512,6 @@ class TestRecencyDecay:
             id="OLD002",
             event_date="2026-03-21",   # 30 days before _EVENT_DATE
             event_type="Battles",
-            actor1="Actor",
-            country="Palestine",
-            location="Gaza",
-            latitude=31.5,
-            longitude=34.47,
             fatalities=26,
         )
         recent_score = _score_fatalities([recent], _EVENT_DATE)
