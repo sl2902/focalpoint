@@ -13,9 +13,9 @@ the ingestion layer and receive a typed AlertOutput — never raw model text.
 
 from __future__ import annotations
 
-from backend.ingestion.acled_connector import AcledEvent
 from backend.ingestion.cpj_connector import CountryStats
 from backend.ingestion.gdelt_connector import GdeltArticle
+from backend.ingestion.gdeltcloud_connector import GdeltCloudEvent
 from backend.processors.gemma_client import GemmaClient
 from backend.processors.prompt_builder import build_prompt
 from backend.security.output_validator import AlertOutput
@@ -35,7 +35,7 @@ class AlertGenerator:
 
     def generate(
         self,
-        acled_events: list[AcledEvent],
+        conflict_events: list[GdeltCloudEvent],
         gdelt_articles: list[GdeltArticle],
         gdelt_aggregate_tone: float,
         cpj_stats: CountryStats,
@@ -47,7 +47,7 @@ class AlertGenerator:
         Generate a validated alert for *region* from multi-source inputs.
 
         Args:
-            acled_events:         Validated ACLED events for the target region.
+            conflict_events:      Validated GdeltCloudEvent list for the target region.
             gdelt_articles:       Validated GDELT articles for the target query.
             gdelt_aggregate_tone: Mean tone from the GDELT timelinetone endpoint.
             cpj_stats:            Historical CPJ journalist-safety stats for the country.
@@ -59,14 +59,13 @@ class AlertGenerator:
         Returns:
             Validated AlertOutput. Always returns — never raises.
         """
-        # Sanitise any journalist query before it reaches the prompt.
         if journalist_query:
             sanitised = sanitise_query(journalist_query).text
         else:
             sanitised = "Provide a current safety assessment for the region."
 
         prompt = build_prompt(
-            acled_events=acled_events,
+            conflict_events=conflict_events,
             gdelt_articles=gdelt_articles,
             gdelt_aggregate_tone=gdelt_aggregate_tone,
             cpj_stats=cpj_stats,

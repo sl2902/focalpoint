@@ -30,9 +30,9 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 # Matches any http/https URL with at least one non-whitespace character after.
 _URL_RE = re.compile(r"^https?://\S+$")
 
-# Matches ACLED event IDs: 3 uppercase letters followed by 4+ digits.
-# Examples: SYR20240101, PSE20240415, SDN20231207
-_ACLED_ID_RE = re.compile(r"^[A-Z]{3}\d{4,}$")
+# Matches GDELT Cloud event IDs: start with "conflict_" followed by word chars/hyphens.
+# Example: conflict_20260423_001
+_GDELT_CLOUD_ID_RE = re.compile(r"^conflict_[\w\-]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -74,9 +74,9 @@ class AlertOutput(BaseModel):
         Gemma 4 from hallucinating plausible-sounding but invalid sources.
         """
         for citation in v:
-            if not (_URL_RE.match(citation) or _ACLED_ID_RE.match(citation)):
+            if not (_URL_RE.match(citation) or _GDELT_CLOUD_ID_RE.match(citation)):
                 raise ValueError(
-                    f"Citation must be a URL or ACLED event ID, got: {citation!r}"
+                    f"Citation must be a URL or GDELT Cloud event ID, got: {citation!r}"
                 )
         return v
 

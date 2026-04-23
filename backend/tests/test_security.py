@@ -142,13 +142,13 @@ class TestAlertOutput:
         assert alert.severity == "RED"
         assert alert.source_citations == ["https://acleddata.com/event/12345"]
 
-    def test_valid_output_with_acled_id_citation(self) -> None:
-        alert = AlertOutput(**_valid_alert(source_citations=["PSE20240415"]))
-        assert alert.source_citations == ["PSE20240415"]
+    def test_valid_output_with_gdelt_cloud_id_citation(self) -> None:
+        alert = AlertOutput(**_valid_alert(source_citations=["conflict_PSE20240415"]))
+        assert alert.source_citations == ["conflict_PSE20240415"]
 
     def test_valid_output_with_mixed_citations(self) -> None:
         alert = AlertOutput(**_valid_alert(
-            source_citations=["PSE20240415", "https://gdeltproject.org/article/123"]
+            source_citations=["conflict_PSE20240415", "https://gdeltproject.org/article/123"]
         ))
         assert len(alert.source_citations) == 2
 

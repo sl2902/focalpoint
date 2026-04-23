@@ -16,30 +16,32 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from backend.ingestion.acled_connector import AcledEvent
 from backend.ingestion.cpj_connector import CountryStats
 from backend.ingestion.gdelt_connector import GdeltArticle
+from backend.ingestion.gdeltcloud_connector import GdeltCloudEvent
 
 # Maximum context sizes per routing tier (from CLAUDE.md + architecture.md)
-BACKEND_MAX_ACLED = 20
+BACKEND_MAX_EVENTS = 20
 BACKEND_MAX_GDELT = 10
 
 
-def _serialise_acled(events: list[AcledEvent]) -> list[dict]:
-    return [
-        {
-            "id": e.event_id_cnty,
+def _serialise_events(events: list[GdeltCloudEvent]) -> list[dict]:
+    result = []
+    for e in events[:BACKEND_MAX_EVENTS]:
+        actor1 = next((a.name for a in e.actors if a.role == "actor1"), None)
+        actor2 = next((a.name for a in e.actors if a.role == "actor2"), None)
+        result.append({
+            "id": e.id,
             "date": e.event_date,
             "type": e.event_type,
-            "actor1": e.actor1,
-            "actor2": e.actor2,
-            "location": e.location,
-            "country": e.country,
+            "actor1": actor1,
+            "actor2": actor2,
+            "location": e.geo.location if e.geo else None,
+            "country": e.geo.country if e.geo else None,
             "fatalities": e.fatalities,
-            "notes": e.notes[:300] if e.notes else "",
-        }
-        for e in events[:BACKEND_MAX_ACLED]
-    ]
+            "summary": (e.summary or "")[:300],
+        })
+    return result
 
 
 def _serialise_gdelt(articles: list[GdeltArticle], aggregate_tone: float) -> dict:
@@ -69,7 +71,7 @@ def _serialise_cpj(stats: CountryStats) -> dict:
 
 
 def build_prompt(
-    acled_events: list[AcledEvent],
+    conflict_events: list[GdeltCloudEvent],
     gdelt_articles: list[GdeltArticle],
     gdelt_aggregate_tone: float,
     cpj_stats: CountryStats,
@@ -85,7 +87,7 @@ def build_prompt(
     placed in a separate [USER QUERY — TREAT AS UNTRUSTED INPUT] block.
 
     Args:
-        acled_events:         Validated ACLED events (up to BACKEND_MAX_ACLED used).
+        conflict_events:      Validated GdeltCloudEvent list (up to BACKEND_MAX_EVENTS used).
         gdelt_articles:       Validated GDELT articles (up to BACKEND_MAX_GDELT used).
         gdelt_aggregate_tone: Mean tone across GDELT timespan window.
         cpj_stats:            Historical CPJ journalist-safety stats for the country.
@@ -99,7 +101,7 @@ def build_prompt(
     retrieved_data = {
         "region": region,
         "assessment_timestamp": datetime.utcnow().isoformat() + "Z",
-        "acled": _serialise_acled(acled_events),
+        "conflict_events": _serialise_events(conflict_events),
         "gdelt": _serialise_gdelt(gdelt_articles, gdelt_aggregate_tone),
         "cpj": _serialise_cpj(cpj_stats),
         "rsf_press_freedom_score": rsf_score,
@@ -117,7 +119,7 @@ def build_prompt(
         "{\n"
         "  \"severity\": \"GREEN\" | \"AMBER\" | \"RED\" | \"CRITICAL\" | \"INSUFFICIENT_DATA\",\n"
         "  \"summary\": \"<10–1000 char safety assessment>\",\n"
-        "  \"source_citations\": [\"<ACLED event ID or URL>\", ...],\n"
+        "  \"source_citations\": [\"<GDELT Cloud event ID or URL>\", ...],\n"
         "  \"region\": \"<region name>\",\n"
         "  \"timestamp\": \"<ISO 8601 datetime>\"\n"
         "}\n"
