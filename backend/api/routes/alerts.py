@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from backend.alerts.severity_scorer import score_severity
 from backend.api.dependencies import (
     get_alert_generator,
+    get_alerts_db_path,
     get_cpj_connector,
     get_gdelt_cloud_connector,
     get_gdelt_connector,
@@ -30,9 +31,20 @@ from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
 from backend.ingestion.gdeltcloud_connector import GdeltCloudConnector
 from backend.processors.alert_generator import AlertGenerator
+from backend.scheduler import store
 from backend.security.rate_limiter import ALERTS_RATE_LIMIT, limiter
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
+
+
+@router.get("/feed", response_model=list[AlertResponse])
+@limiter.limit(ALERTS_RATE_LIMIT)
+async def get_alerts_feed(
+    request: Request,
+    db_path: str = Depends(get_alerts_db_path),
+) -> list[AlertResponse]:
+    """Return the latest stored alert per region, ordered by severity."""
+    return await store.get_latest_per_region(db_path)
 
 
 @router.get("/watchzone", response_model=AlertResponse)
@@ -66,12 +78,16 @@ async def get_region_alerts(
     request: Request,
     region: str = Path(min_length=2, max_length=100),
     days: int = Query(default=1, ge=1, le=30),
+    db_path: str = Depends(get_alerts_db_path),
     gdelt_cloud: GdeltCloudConnector = Depends(get_gdelt_cloud_connector),
     gdelt: GdeltConnector = Depends(get_gdelt_connector),
     cpj: CPJConnector = Depends(get_cpj_connector),
     generator: AlertGenerator = Depends(get_alert_generator),
 ) -> AlertResponse:
     """Return the latest severity alert for a named region."""
+    cached = await store.get_cached_alert(db_path, region.title())
+    if cached is not None:
+        return cached
     return await _build_alert(
         region=region,
         days=days,

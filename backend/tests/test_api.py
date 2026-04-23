@@ -11,6 +11,7 @@ stable, predictable results.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from backend.api.dependencies import (
     get_alert_generator,
+    get_alerts_db_path,
     get_cpj_connector,
     get_gdelt_cloud_connector,
     get_gdelt_connector,
@@ -30,6 +32,7 @@ from backend.ingestion.gdeltcloud_connector import (
     GdeltCloudEvent,
     GdeltCloudGeo,
 )
+from backend.scheduler import store
 from backend.security.output_validator import AlertOutput, Citation
 
 # ---------------------------------------------------------------------------
@@ -125,12 +128,21 @@ def _mock_generator():
 
 
 @pytest.fixture()
-def client():
+def tmp_db_path(tmp_path):
+    """Create and initialise an empty SQLite DB in a temp directory."""
+    path = str(tmp_path / "test_alerts.db")
+    asyncio.get_event_loop().run_until_complete(store.init_db(path))
+    return path
+
+
+@pytest.fixture()
+def client(tmp_db_path):
     """TestClient with all external dependencies mocked."""
     app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
     app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
     app.dependency_overrides[get_cpj_connector] = _mock_cpj
     app.dependency_overrides[get_alert_generator] = _mock_generator
+    app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
@@ -399,3 +411,132 @@ class TestGetMapMarkers:
     def test_missing_region_rejected(self, client: TestClient) -> None:
         resp = client.get("/map/markers")
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /alerts/feed
+# ---------------------------------------------------------------------------
+
+
+class TestGetAlertsFeed:
+    def test_returns_200_with_empty_db(self, client: TestClient) -> None:
+        resp = client.get("/alerts/feed")
+        assert resp.status_code == 200
+
+    def test_returns_empty_list_when_no_rows(self, client: TestClient) -> None:
+        resp = client.get("/alerts/feed")
+        assert resp.json() == []
+
+    def test_returns_list_of_alert_responses(
+        self, client: TestClient, tmp_db_path: str
+    ) -> None:
+        asyncio.get_event_loop().run_until_complete(
+            store.upsert_alert(
+                tmp_db_path,
+                region="Gaza",
+                severity="RED",
+                summary="Active armed clashes reported — restrict movement.",
+                source_citations=[
+                    Citation(
+                        id="conflict_test_001",
+                        description="Armed Clash — Gaza, 2026-04-23 (5 fatalities)",
+                    )
+                ],
+                confidence=0.8,
+                score=60.0,
+                timestamp=_TS.isoformat(),
+            )
+        )
+        resp = client.get("/alerts/feed")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert isinstance(body, list)
+        assert len(body) == 1
+        assert body[0]["region"] == "Gaza"
+        assert body[0]["severity"] == "RED"
+
+    def test_feed_ordered_by_severity(
+        self, client: TestClient, tmp_db_path: str
+    ) -> None:
+        async def _seed():
+            for region, sev in [("Gaza", "AMBER"), ("Ukraine", "CRITICAL"), ("Sudan", "RED")]:
+                await store.upsert_alert(
+                    tmp_db_path,
+                    region=region,
+                    severity=sev,
+                    summary="Test summary for severity ordering test.",
+                    source_citations=[
+                        Citation(
+                            id="conflict_test_001",
+                            description="Armed Clash — Test, 2026-04-23 (1 fatalities)",
+                        )
+                    ],
+                    confidence=0.7,
+                    score=50.0,
+                    timestamp=_TS.isoformat(),
+                )
+
+        asyncio.get_event_loop().run_until_complete(_seed())
+        resp = client.get("/alerts/feed")
+        severities = [item["severity"] for item in resp.json()]
+        assert severities == ["CRITICAL", "RED", "AMBER"]
+
+
+# ---------------------------------------------------------------------------
+# GET /alerts/{region} — cache behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestGetRegionAlertsCache:
+    def test_cache_hit_returns_cached_alert(
+        self, tmp_db_path: str
+    ) -> None:
+        """When a fresh row exists, the live pipeline must NOT be called."""
+        asyncio.get_event_loop().run_until_complete(
+            store.upsert_alert(
+                tmp_db_path,
+                region="Ukraine",
+                severity="AMBER",
+                summary="Cached summary — elevated conflict activity in region.",
+                source_citations=[
+                    Citation(
+                        id="conflict_test_001",
+                        description="Armed Clash — Ukraine, 2026-04-23 (2 fatalities)",
+                    )
+                ],
+                confidence=0.65,
+                score=40.0,
+                timestamp=_TS.isoformat(),
+            )
+        )
+        mock_gen = _mock_generator()
+        app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
+        app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
+        app.dependency_overrides[get_alert_generator] = lambda: mock_gen
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        with TestClient(app) as c:
+            resp = c.get("/alerts/Ukraine")
+        app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json()["severity"] == "AMBER"
+        assert resp.json()["summary"] == "Cached summary — elevated conflict activity in region."
+        mock_gen.generate.assert_not_called()
+
+    def test_cache_miss_calls_live_pipeline(
+        self, tmp_db_path: str
+    ) -> None:
+        """Empty DB → live pipeline runs and generator is called."""
+        mock_gen = _mock_generator()
+        app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
+        app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
+        app.dependency_overrides[get_alert_generator] = lambda: mock_gen
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        with TestClient(app) as c:
+            resp = c.get("/alerts/Gaza")
+        app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        mock_gen.generate.assert_called_once()

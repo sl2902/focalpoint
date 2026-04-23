@@ -20,11 +20,14 @@ from loguru import logger
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from backend.api.routes import alerts, map, query
 from backend.config import settings
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.processors.alert_generator import AlertGenerator
 from backend.processors.gemma_client import GemmaClient
+from backend.scheduler import jobs, store
 from backend.security.rate_limiter import limiter
 
 
@@ -52,9 +55,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.alert_generator = AlertGenerator(gemma_client)
     logger.info("Alert generator ready")
 
+    app.state.db_path = settings.ALERTS_DB_PATH
+    await store.init_db(app.state.db_path)
+    logger.info(f"Alert store initialised at {app.state.db_path!r}")
+
+    if settings.SCHEDULER_ENABLED:
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            jobs.refresh_one_watch_zone,
+            "interval",
+            hours=8,
+            args=[app],
+            id="refresh_watch_zone",
+            replace_existing=True,
+        )
+        scheduler.start()
+        app.state.scheduler = scheduler
+        logger.info("Alert scheduler started (8h interval)")
+
     yield
 
     # --- shutdown ---
+    if getattr(app.state, "scheduler", None) is not None:
+        app.state.scheduler.shutdown(wait=False)
+
     if app.state.redis is not None:
         await app.state.redis.aclose()
 

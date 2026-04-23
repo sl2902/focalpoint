@@ -18,5 +18,12 @@ class Settings(BaseSettings):
     ACLED_PASSWORD: str = ""
     ACLED_TOKEN_URL: str = "https://acleddata.com/oauth/token"
 
+    # Background alert scheduler
+    WATCH_ZONES: list[str] = [
+        "Palestine", "Israel", "Ukraine", "Sudan", "Myanmar", "Yemen", "Syria"
+    ]
+    ALERTS_DB_PATH: str = "backend/data/alerts.db"
+    SCHEDULER_ENABLED: bool = True
+
 
 settings = Settings()

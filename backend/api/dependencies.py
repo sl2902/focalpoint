@@ -44,3 +44,7 @@ async def get_cpj_connector(request: Request) -> CPJConnector:
 
 async def get_alert_generator(request: Request) -> AlertGenerator:
     return request.app.state.alert_generator
+
+
+async def get_alerts_db_path(request: Request) -> str:
+    return request.app.state.db_path
