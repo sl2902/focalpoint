@@ -22,6 +22,15 @@ from pydantic import BaseModel
 
 DEFAULT_CSV_PATH = Path(__file__).parent.parent / "data" / "cpj_incidents.csv"
 
+# Maps caller-friendly country names → exact CPJ CSV country strings.
+# Add entries here whenever a region name doesn't match the CSV directly.
+# Pattern mirrors RSF_ALIASES in backend/data/rsf_scores.py.
+CPJ_ALIASES: dict[str, str] = {
+    "Palestine": "Israel and the Occupied Palestinian Territory",
+    "Gaza": "Israel and the Occupied Palestinian Territory",
+    "West Bank": "Israel and the Occupied Palestinian Territory",
+}
+
 # Maps raw CSV headers → snake_case field names used in CpjIncident.
 _COLUMN_MAP: dict[str, str] = {
     "Name": "name",
@@ -113,8 +122,14 @@ class CPJConnector:
         return sorted(self._by_country.keys())
 
     def get_incidents(self, country: str) -> list[CpjIncident]:
-        """Return all incidents for *country*, or an empty list if none."""
-        return self._by_country.get(country, [])
+        """Return all incidents for *country*, or an empty list if none.
+
+        Resolves *country* through CPJ_ALIASES before lookup so callers
+        can pass region names like "Palestine" without knowing the exact
+        CPJ CSV string ("Israel and the Occupied Palestinian Territory").
+        """
+        resolved = CPJ_ALIASES.get(country, country)
+        return self._by_country.get(resolved, [])
 
     def get_country_stats(self, country: str) -> CountryStats:
         """
@@ -127,7 +142,8 @@ class CPJConnector:
 
         Returns a zeroed CountryStats if the country has no incidents.
         """
-        incidents = self._by_country.get(country, [])
+        resolved = CPJ_ALIASES.get(country, country)
+        incidents = self._by_country.get(resolved, [])
         total = len(incidents)
         if total == 0:
             return CountryStats(
