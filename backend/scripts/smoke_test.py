@@ -123,13 +123,7 @@ _FIXTURE_EVENTS: list[GdeltCloudEvent] = [
 
 _FIXTURE_AGGREGATE_TONE: float = -3.63   # from GDELT Doc API run on 2026-04-23
 
-_FIXTURE_CPJ_STATS = CountryStats(
-    country="Palestine",
-    total_incidents=0,
-    incidents_per_year=0.0,
-    earliest_year=0,
-    latest_year=0,
-)
+_FIXTURE_CPJ_STATS = CPJConnector().get_country_stats("Palestine")
 
 _FIXTURE_RSF_SCORE: float = 27.41   # West Bank and Gaza, RSF 2025
 
