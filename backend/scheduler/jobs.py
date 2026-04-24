@@ -64,17 +64,18 @@ async def refresh_one_watch_zone(app) -> None:  # noqa: ANN001
             cpj_stats=cpj_stats,
             rsf_score=rsf_score,
             region=region,
+            severity_result=severity_result,
         )
         await store.upsert_alert(
             db_path=app.state.db_path,
             region=region,
-            severity=severity_result.level.value,
+            severity=alert.severity,
             summary=alert.summary,
             source_citations=alert.source_citations,
             confidence=severity_result.confidence,
             score=severity_result.score,
             timestamp=alert.timestamp.isoformat(),
         )
-        logger.info(f"scheduler: {region!r} stored → {severity_result.level.value}")
+        logger.info(f"scheduler: {region!r} stored → {alert.severity}")
     except Exception as exc:
         logger.error(f"scheduler: failed to refresh {region!r} — {exc}")

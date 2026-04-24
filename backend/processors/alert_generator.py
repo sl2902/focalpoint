@@ -9,10 +9,24 @@ It wires together:
 
 Callers (FastAPI routes, the scheduler) pass validated Pydantic models from
 the ingestion layer and receive a typed AlertOutput — never raw model text.
+
+Maximum severity rule
+---------------------
+When a SeverityResult from score_severity is supplied, the final severity is
+max(gemma_severity, scorer_severity) using SEVERITY_ORDER:
+
+  - Gemma higher  → keep Gemma severity; append an elevation note to the summary.
+  - Scorer higher → override severity with scorer value; summary unchanged.
+  - Equal         → no changes.
+
+INSUFFICIENT_DATA has order -1, so any real severity level wins over it.
 """
 
 from __future__ import annotations
 
+from typing import Final
+
+from backend.alerts.severity_scorer import SeverityResult
 from backend.ingestion.cpj_connector import CountryStats
 from backend.ingestion.gdelt_connector import GdeltArticle
 from backend.ingestion.gdeltcloud_connector import GdeltCloudEvent
@@ -20,6 +34,58 @@ from backend.processors.gemma_client import GemmaClient
 from backend.processors.prompt_builder import build_prompt
 from backend.security.output_validator import AlertOutput
 from backend.security.sanitiser import sanitise_query
+
+# Severity ordering for the maximum severity rule.
+# INSUFFICIENT_DATA is -1 so any real score always wins over a model failure.
+SEVERITY_ORDER: Final[dict[str, int]] = {
+    "INSUFFICIENT_DATA": -1,
+    "GREEN": 0,
+    "AMBER": 1,
+    "RED": 2,
+    "CRITICAL": 3,
+}
+
+# Note appended to the summary when Gemma's severity exceeds the scorer's.
+_ELEVATION_NOTE: Final[str] = (
+    " [Note: contextual factors elevated severity above the data-driven baseline.]"
+)
+
+
+def _apply_max_severity(alert: AlertOutput, severity_result: SeverityResult) -> AlertOutput:
+    """Return alert with severity = max(gemma_severity, scorer_severity).
+
+    Special case: if the scorer returned INSUFFICIENT_DATA the data environment is
+    genuinely empty — override Gemma's output regardless, preventing the model from
+    hallucinating a real severity when there is nothing to assess.
+
+    Normal cases:
+      Gemma higher  → keep Gemma severity, append _ELEVATION_NOTE to summary.
+      Scorer higher → set severity to scorer value, leave summary unchanged.
+      Equal         → return alert unchanged.
+
+    Note: INSUFFICIENT_DATA in GEMMA's output has order -1, so the scorer always
+    wins when Gemma fails — this is distinct from the scorer's own INSUFFICIENT_DATA
+    veto handled above.
+    """
+    # Scorer veto — no data available to assess.
+    if severity_result.level.value == "INSUFFICIENT_DATA":
+        return alert.model_copy(update={"severity": "INSUFFICIENT_DATA"})
+
+    gemma_order = SEVERITY_ORDER.get(alert.severity, -1)
+    scorer_order = SEVERITY_ORDER.get(severity_result.level.value, -1)
+
+    if gemma_order > scorer_order:
+        # Gemma's assessment is more alarming — honour it and explain why.
+        max_body = 1000 - len(_ELEVATION_NOTE)
+        new_summary = alert.summary[:max_body] + _ELEVATION_NOTE
+        return alert.model_copy(update={"summary": new_summary})
+
+    if scorer_order > gemma_order:
+        # Deterministic scorer outranks the model — use scorer severity.
+        return alert.model_copy(update={"severity": severity_result.level.value})
+
+    # Equal — no change.
+    return alert
 
 
 class AlertGenerator:
@@ -42,6 +108,7 @@ class AlertGenerator:
         rsf_score: float,
         region: str,
         journalist_query: str = "",
+        severity_result: SeverityResult | None = None,
     ) -> AlertOutput:
         """
         Generate a validated alert for *region* from multi-source inputs.
@@ -55,6 +122,9 @@ class AlertGenerator:
             region:               Human-readable region label (e.g. "northern Gaza").
             journalist_query:     Optional free-text query from a journalist.
                                   Sanitised before inclusion in the prompt.
+            severity_result:      Optional SeverityResult from score_severity.
+                                  When provided the maximum severity rule is applied:
+                                  final severity = max(gemma, scorer).
 
         Returns:
             Validated AlertOutput. Always returns — never raises.
@@ -74,4 +144,9 @@ class AlertGenerator:
             sanitised_query=sanitised,
         )
 
-        return self._gemma.generate_alert(prompt, region)
+        alert = self._gemma.generate_alert(prompt, region)
+
+        if severity_result is not None:
+            alert = _apply_max_severity(alert, severity_result)
+
+        return alert

@@ -18,7 +18,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Path, Query, Request
 from loguru import logger
 
-from backend.alerts.severity_scorer import score_severity
+from backend.alerts.severity_scorer import SeverityLevel, score_severity
+from backend.security.output_validator import Citation
 from backend.api.dependencies import (
     get_alert_generator,
     get_alerts_db_path,
@@ -135,6 +136,30 @@ async def _build_alert(
     )
     logger.info(f"alerts: score breakdown for {region!r} — {severity_result.reasoning}")
 
+    # Short-circuit: no data at all — skip Gemma to avoid a quota call on empty context.
+    if severity_result.level == SeverityLevel.INSUFFICIENT_DATA:
+        from datetime import datetime, timezone
+        response = AlertResponse(
+            severity="INSUFFICIENT_DATA",
+            summary=severity_result.reasoning,
+            source_citations=[Citation(id="CPJ", description="No live or historical data available.")],
+            region=region,
+            timestamp=datetime.now(tz=timezone.utc),
+            confidence=0.0,
+        )
+        await store.upsert_alert(
+            db_path=db_path,
+            region=region,
+            severity=response.severity,
+            summary=response.summary,
+            source_citations=response.source_citations,
+            confidence=response.confidence,
+            score=0.0,
+            timestamp=response.timestamp.isoformat(),
+        )
+        logger.info(f"alerts: INSUFFICIENT_DATA for {region!r} — skipped Gemma")
+        return response
+
     alert = generator.generate(
         conflict_events=events,
         gdelt_articles=gdelt_resp.articles,
@@ -142,10 +167,11 @@ async def _build_alert(
         cpj_stats=cpj_stats,
         rsf_score=rsf_score,
         region=region,
+        severity_result=severity_result,
     )
 
     response = AlertResponse(
-        severity=severity_result.level.value,
+        severity=alert.severity,
         summary=alert.summary,
         source_citations=alert.source_citations,
         region=region,

@@ -21,7 +21,8 @@ from backend.ingestion.gdeltcloud_connector import (
     GdeltCloudGeo,
     GdeltCloudMetrics,
 )
-from backend.processors.alert_generator import AlertGenerator
+from backend.alerts.severity_scorer import SeverityLevel, SeverityResult
+from backend.processors.alert_generator import SEVERITY_ORDER, AlertGenerator, _apply_max_severity
 from backend.processors.gemma_client import GemmaClient, _extract_json
 from backend.processors.prompt_builder import (
     BACKEND_MAX_EVENTS,
@@ -594,3 +595,131 @@ class TestAlertGenerator:
         )
         assert isinstance(result, AlertOutput)
         assert result.severity == "INSUFFICIENT_DATA"
+
+
+# ---------------------------------------------------------------------------
+# Maximum severity rule — _apply_max_severity and SEVERITY_ORDER
+# ---------------------------------------------------------------------------
+
+
+def _make_severity_result(level: str) -> SeverityResult:
+    scores = {"GREEN": 10.0, "AMBER": 30.0, "RED": 60.0, "CRITICAL": 80.0}
+    return SeverityResult(
+        level=SeverityLevel(level),
+        score=scores.get(level, 0.0),
+        confidence=0.8,
+        reasoning=f"test → {level}",
+        component_scores={
+            "fatalities": 0.0, "event_type": 0.0, "gdelt_tone": 0.0,
+            "cpj_rate": 0.0, "rsf_baseline": 0.0,
+        },
+    )
+
+
+def _make_alert(severity: str, summary: str = "Active clashes near journalist watch zone — restrict movement.") -> AlertOutput:
+    return AlertOutput.model_validate(_valid_alert_dict(severity=severity, summary=summary))
+
+
+class TestMaxSeverityRule:
+    def test_severity_order_values(self):
+        assert SEVERITY_ORDER["INSUFFICIENT_DATA"] == -1
+        assert SEVERITY_ORDER["GREEN"] == 0
+        assert SEVERITY_ORDER["AMBER"] == 1
+        assert SEVERITY_ORDER["RED"] == 2
+        assert SEVERITY_ORDER["CRITICAL"] == 3
+
+    def test_gemma_higher_severity_kept(self):
+        """Gemma RED > scorer AMBER → final severity = RED."""
+        alert = _apply_max_severity(_make_alert("RED"), _make_severity_result("AMBER"))
+        assert alert.severity == "RED"
+
+    def test_gemma_higher_adds_elevation_note_to_summary(self):
+        """When Gemma wins, summary must include the elevation note."""
+        alert = _apply_max_severity(_make_alert("RED"), _make_severity_result("AMBER"))
+        assert "contextual factors" in alert.summary.lower()
+        assert "elevated" in alert.summary.lower()
+
+    def test_scorer_higher_overrides_gemma_severity(self):
+        """Scorer RED > Gemma AMBER → final severity = RED."""
+        alert = _apply_max_severity(_make_alert("AMBER"), _make_severity_result("RED"))
+        assert alert.severity == "RED"
+
+    def test_scorer_higher_leaves_summary_unchanged(self):
+        """When scorer wins, Gemma's original summary must not be modified."""
+        original_summary = "Active clashes near journalist watch zone — restrict movement."
+        alert = _apply_max_severity(
+            _make_alert("AMBER", summary=original_summary),
+            _make_severity_result("RED"),
+        )
+        assert alert.summary == original_summary
+
+    def test_equal_severity_no_changes(self):
+        """Equal severities → alert returned unchanged."""
+        original = _make_alert("RED")
+        result = _apply_max_severity(original, _make_severity_result("RED"))
+        assert result.severity == "RED"
+        assert result.summary == original.summary
+
+    def test_gemma_critical_beats_scorer_red(self):
+        alert = _apply_max_severity(_make_alert("CRITICAL"), _make_severity_result("RED"))
+        assert alert.severity == "CRITICAL"
+        assert "contextual factors" in alert.summary.lower()
+
+    def test_gemma_insufficient_data_loses_to_scorer_real_severity(self):
+        """Gemma INSUFFICIENT_DATA order=-1 → scorer GREEN wins."""
+        alert = _apply_max_severity(_make_alert("INSUFFICIENT_DATA"), _make_severity_result("GREEN"))
+        assert alert.severity == "GREEN"
+
+    def test_scorer_insufficient_data_vetoes_gemma_real_severity(self):
+        """Scorer INSUFFICIENT_DATA is a hard veto — Gemma RED must not win."""
+        sr = SeverityResult(
+            level=SeverityLevel.INSUFFICIENT_DATA,
+            score=0.0, confidence=0.0,
+            reasoning="no data",
+            component_scores={},
+        )
+        alert = _apply_max_severity(_make_alert("RED"), sr)
+        assert alert.severity == "INSUFFICIENT_DATA"
+
+    def test_summary_with_note_does_not_exceed_1000_chars(self):
+        long_summary = "A" * 980
+        alert = _apply_max_severity(
+            _make_alert("RED", summary=long_summary),
+            _make_severity_result("AMBER"),
+        )
+        assert len(alert.summary) <= 1000
+
+    def test_generate_applies_max_rule_when_severity_result_provided(self):
+        """AlertGenerator.generate() must apply max rule when severity_result given."""
+        gemma = MagicMock(spec=GemmaClient)
+        gemma.generate_alert.return_value = AlertOutput.model_validate(
+            _valid_alert_dict(severity="AMBER")
+        )
+        gen = AlertGenerator(gemma)
+        result = gen.generate(
+            conflict_events=[_GDELT_EVENT],
+            gdelt_articles=[_GDELT_ARTICLE],
+            gdelt_aggregate_tone=0.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+            severity_result=_make_severity_result("RED"),
+        )
+        assert result.severity == "RED"
+
+    def test_generate_without_severity_result_returns_gemma_output_unchanged(self):
+        """severity_result=None → max rule skipped, raw Gemma output returned."""
+        gemma = MagicMock(spec=GemmaClient)
+        gemma.generate_alert.return_value = AlertOutput.model_validate(
+            _valid_alert_dict(severity="GREEN")
+        )
+        gen = AlertGenerator(gemma)
+        result = gen.generate(
+            conflict_events=[],
+            gdelt_articles=[],
+            gdelt_aggregate_tone=0.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+        )
+        assert result.severity == "GREEN"
