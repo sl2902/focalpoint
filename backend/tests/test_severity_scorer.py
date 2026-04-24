@@ -447,6 +447,73 @@ class TestHistoricalFallback:
 
 
 # ---------------------------------------------------------------------------
+# Historical risk floor — live path (events=[], articles present)
+# ---------------------------------------------------------------------------
+
+
+class TestHistoricalRiskFloor:
+    def test_yemen_profile_floors_to_amber_via_cpj_rate(self) -> None:
+        """CPJ 3.5/yr ≥ 3.0 triggers floor; RSF 31.45 ≥ 30.0 does not."""
+        # composite: cpj=10 + rsf=7 = 17 → GREEN → floor → AMBER
+        result = score_severity([], [make_article()], make_cpj(3.5, total=35), 31.45)
+        assert result.level == SeverityLevel.AMBER
+        assert result.floor_applied is True
+        assert "CPJ" in result.floor_reason
+
+    def test_syria_profile_floors_to_amber_via_both_conditions(self) -> None:
+        """CPJ 3.5/yr ≥ 3.0 AND RSF 15.82 < 30.0 — both conditions trigger."""
+        # composite: cpj=10 + rsf=10 = 20 → GREEN → floor → AMBER
+        result = score_severity([], [make_article()], make_cpj(3.5, total=35), 15.82)
+        assert result.level == SeverityLevel.AMBER
+        assert result.floor_applied is True
+        assert "CPJ" in result.floor_reason
+        assert "RSF" in result.floor_reason
+
+    def test_sudan_profile_stays_green_no_floor(self) -> None:
+        """CPJ 0.53 < 3.0 and RSF 30.34 ≥ 30.0 — neither condition met."""
+        # composite: cpj=3 + rsf=7 = 10 → GREEN, no floor
+        result = score_severity([], [make_article()], make_cpj(0.53, total=5), 30.34)
+        assert result.level == SeverityLevel.GREEN
+        assert result.floor_applied is False
+        assert result.floor_reason == ""
+
+    def test_palestine_with_events_floor_not_applied(self) -> None:
+        """conflict_events non-empty → floor bypassed entirely."""
+        result = score_severity(
+            [make_event("Armed Clash", fatalities=5)], [make_article()],
+            make_cpj(2.4, total=12), 27.41,
+        )
+        assert result.floor_applied is False
+
+    def test_floor_not_applied_when_composite_already_amber(self) -> None:
+        """Both conditions met, but composite already AMBER — floor_applied stays False."""
+        # cpj=5.0/yr → 15pts, rsf=15.0 → 10pts, tone=-6.0 → 10pts → total=35 → AMBER
+        result = score_severity(
+            [], [make_article()], make_cpj(5.0, total=25), 15.0,
+            gdelt_aggregate_tone=-6.0,
+        )
+        assert result.level == SeverityLevel.AMBER
+        assert result.floor_applied is False
+
+    def test_floor_reason_mentions_both_conditions_when_both_trigger(self) -> None:
+        # cpj=4.0/yr → 10pts, rsf=20.0 → 10pts → total=20 → GREEN → floor
+        result = score_severity([], [make_article()], make_cpj(4.0, total=20), 20.0)
+        assert result.floor_applied is True
+        assert "CPJ" in result.floor_reason
+        assert "RSF" in result.floor_reason
+
+    def test_floor_info_appears_in_reasoning_string(self) -> None:
+        result = score_severity([], [make_article()], make_cpj(4.0, total=20), 20.0)
+        assert result.floor_applied is True
+        assert "floor" in result.reasoning.lower()
+
+    def test_rsf_zero_sentinel_does_not_trigger_floor(self) -> None:
+        """rsf=0.0 means country not in RSF index — must not trigger RSF floor condition."""
+        result = score_severity([], [make_article()], make_cpj(0.5, total=5), 0.0)
+        assert result.floor_applied is False
+
+
+# ---------------------------------------------------------------------------
 # Partial data scenarios
 # ---------------------------------------------------------------------------
 
@@ -680,11 +747,10 @@ class TestIranRsfResolution:
         """16.22 < 25 → _score_rsf must return 10.0 (max baseline contribution)."""
         assert _score_rsf(16.22) == 10.0
 
-    def test_iran_zero_gdelt_events_produces_green_despite_high_rsf_risk(self) -> None:
-        """Documents the known scoring gap: with 0 GDELT Cloud events, fatalities and
-        event_type both score 0, making GREEN achievable even for high-risk countries.
-        Root cause: has_fatalities=True filter in GdeltCloudConnector may return 0
-        events for Iran — use has_fatalities=False to widen the query."""
+    def test_iran_zero_gdelt_events_floors_to_amber_via_rsf(self) -> None:
+        """With 0 GDELT Cloud events, the historical risk floor raises Iran to AMBER.
+        RSF 16.22 < 30.0 triggers the floor even though CPJ rate 0.75/yr < 3.0.
+        Previously documented as a scoring gap — now fixed by _apply_floor."""
         cpj = make_cpj(0.75, total=21)   # ~Iran's real CPJ rate
         articles = [make_article()]
 
@@ -692,11 +758,14 @@ class TestIranRsfResolution:
             [],            # 0 GDELT Cloud events — simulates the Iran failure mode
             articles,
             cpj,
-            16.22,         # Iran's RSF score
+            16.22,         # Iran's RSF score (< 30.0 → floor triggers)
             gdelt_aggregate_tone=-3.0,
         )
-        # fatalities=0, event_type=0, tone=5, cpj=3, rsf=10 → total=18 → GREEN
-        assert result.level == SeverityLevel.GREEN
+        # fatalities=0, event_type=0, tone=5, cpj=3, rsf=10 → composite=18 → GREEN
+        # → floor: RSF 16.22 < 30.0 → raised to AMBER
+        assert result.level == SeverityLevel.AMBER
+        assert result.floor_applied is True
+        assert "RSF" in result.floor_reason
         assert result.component_scores["fatalities"] == 0.0
         assert result.component_scores["event_type"] == 0.0
         assert result.component_scores["rsf_baseline"] == 10.0

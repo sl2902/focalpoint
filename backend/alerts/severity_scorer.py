@@ -51,6 +51,8 @@ class SeverityResult(BaseModel):
     reasoning: str
     component_scores: dict[str, float]            # per-source breakdown
     historical_only: bool = False                 # True when no live data — CPJ+RSF fallback used
+    floor_applied: bool = False                   # True when GREEN was raised to AMBER by risk floor
+    floor_reason: str = ""                        # Description of the triggering condition(s)
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +238,34 @@ def _level_from_score(score: float) -> SeverityLevel:
     return SeverityLevel.GREEN  # unreachable but satisfies type checker
 
 
+def _apply_floor(
+    level: SeverityLevel,
+    cpj_stats: CountryStats,
+    rsf_press_freedom: float,
+) -> tuple[SeverityLevel, bool, str]:
+    """Raise level to AMBER when no live events but historical signals indicate risk.
+
+    Triggered (OR) when:
+      cpj_stats.incidents_per_year >= 3.0  — high journalist casualty rate
+      0.0 < rsf_press_freedom < 30.0       — very low press freedom
+                                             (0.0 excluded: sentinel for "not in index")
+
+    Only raises GREEN → AMBER.  AMBER / RED / CRITICAL are returned unchanged
+    with floor_applied=False — the floor was not the deciding factor.
+    """
+    conditions: list[str] = []
+    if cpj_stats.incidents_per_year >= 3.0:
+        conditions.append(f"CPJ {cpj_stats.incidents_per_year:.2f}/yr ≥ 3.0")
+    if 0.0 < rsf_press_freedom < 30.0:
+        conditions.append(f"RSF {rsf_press_freedom:.1f} < 30.0")
+    if not conditions:
+        return level, False, ""
+    if level == SeverityLevel.GREEN:
+        reason = "floor→AMBER: " + " and ".join(conditions)
+        return SeverityLevel.AMBER, True, reason
+    return level, False, ""
+
+
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
@@ -333,6 +363,12 @@ def score_severity(
         conflict_events, gdelt_articles, cpj_stats, rsf_press_freedom
     )
 
+    # Historical risk floor — only when GDELT Cloud returned no live events.
+    if not conflict_events:
+        level, floor_applied, floor_reason = _apply_floor(level, cpj_stats, rsf_press_freedom)
+    else:
+        floor_applied, floor_reason = False, ""
+
     # Build structured reasoning string.
     total_fatalities = sum(e.fatalities or 0 for e in conflict_events)
     avg_tone_str = f"{gdelt_aggregate_tone:.1f}" if gdelt_articles else "n/a"
@@ -349,6 +385,8 @@ def score_severity(
         f" | composite={total:.1f} → {level.value}"
         f" (confidence={confidence:.2f})"
     )
+    if floor_applied:
+        reasoning += f" | {floor_reason}"
 
     return SeverityResult(
         level=level,
@@ -356,4 +394,6 @@ def score_severity(
         confidence=confidence,
         reasoning=reasoning,
         component_scores=components,
+        floor_applied=floor_applied,
+        floor_reason=floor_reason,
     )
