@@ -29,7 +29,7 @@ async def refresh_one_watch_zone(app) -> None:  # noqa: ANN001
     """Refresh the alert for the next region in the WATCH_ZONES rotation."""
     global _rotation_index
     zones = settings.WATCH_ZONES
-    region = zones[_rotation_index % len(zones)]
+    region = zones[_rotation_index % len(zones)].title()
     _rotation_index += 1
     logger.info(f"scheduler: refreshing {region!r}")
 
