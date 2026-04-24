@@ -559,6 +559,34 @@ class TestGemmaClient:
         for call in mock_client.models.generate_content.call_args_list:
             assert call.kwargs["config"] is _WEB_SEARCH_GENERATION_CONFIG
 
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_response_schema_set_on_default_config(self, mock_client_cls):
+        from backend.processors.gemma_client import _ALERT_RESPONSE_SCHEMA, _GENERATION_CONFIG
+        assert _GENERATION_CONFIG.response_schema is _ALERT_RESPONSE_SCHEMA
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_web_search_config_has_no_response_schema(self, mock_client_cls):
+        from backend.processors.gemma_client import _WEB_SEARCH_GENERATION_CONFIG
+        assert _WEB_SEARCH_GENERATION_CONFIG.response_schema is None
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_partial_invalid_citations_stripped_and_alert_returned(self, mock_client_cls):
+        """One valid + one invalid citation → alert returned with only the valid citation."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        payload = _valid_alert_dict(source_citations=[
+            {"id": "conflict_PSE20260101", "description": "Armed Clash — Gaza City, 2026-01-01 (5 fatalities)"},
+            {"id": "not a valid id", "description": "hallucinated citation"},
+        ])
+        mock_client.models.generate_content.return_value = _mock_genai_response(payload)
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.generate_alert("prompt", _REGION)
+
+        assert result.severity == "RED"
+        assert len(result.source_citations) == 1
+        assert result.source_citations[0].id == "conflict_PSE20260101"
+
 
 # ---------------------------------------------------------------------------
 # AlertGenerator tests

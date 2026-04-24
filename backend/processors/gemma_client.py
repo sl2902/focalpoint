@@ -33,11 +33,46 @@ _BACKEND_MODEL = "gemma-4-26b-a4b-it"
 # Strip markdown code fences that the model may accidentally emit.
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
+# Response schema that constrains Gemma 4 output to exactly the AlertOutput
+# structure. Enforced at the API level before our Pydantic validator runs.
+_ALERT_RESPONSE_SCHEMA = genai_types.Schema(
+    type=genai_types.Type.OBJECT,
+    properties={
+        "severity": genai_types.Schema(
+            type=genai_types.Type.STRING,
+            enum=["GREEN", "AMBER", "RED", "CRITICAL", "INSUFFICIENT_DATA"],
+        ),
+        "summary": genai_types.Schema(
+            type=genai_types.Type.STRING,
+        ),
+        "source_citations": genai_types.Schema(
+            type=genai_types.Type.ARRAY,
+            items=genai_types.Schema(
+                type=genai_types.Type.OBJECT,
+                properties={
+                    "id": genai_types.Schema(type=genai_types.Type.STRING),
+                    "description": genai_types.Schema(type=genai_types.Type.STRING),
+                },
+                required=["id", "description"],
+            ),
+        ),
+        "region": genai_types.Schema(
+            type=genai_types.Type.STRING,
+        ),
+        "timestamp": genai_types.Schema(
+            type=genai_types.Type.STRING,
+        ),
+    },
+    required=["severity", "summary", "source_citations", "region", "timestamp"],
+)
+
 # Generation config: temperature 0 for deterministic safety assessments.
+# response_schema enforces AlertOutput structure at the API level.
 _GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
     max_output_tokens=1024,
     response_mime_type="application/json",
+    response_schema=_ALERT_RESPONSE_SCHEMA,
 )
 
 # Web search config: same temperature but includes the Google Search grounding

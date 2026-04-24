@@ -769,3 +769,28 @@ class TestIranRsfResolution:
         assert result.component_scores["fatalities"] == 0.0
         assert result.component_scores["event_type"] == 0.0
         assert result.component_scores["rsf_baseline"] == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Gaza / Gaza Strip alias resolution
+# ---------------------------------------------------------------------------
+
+
+class TestGazaAliasResolution:
+    def test_gaza_rsf_alias_resolves_to_west_bank_and_gaza(self) -> None:
+        assert RSF_ALIASES.get("Gaza") == "West Bank and Gaza"
+
+    def test_gaza_strip_rsf_alias_resolves_to_west_bank_and_gaza(self) -> None:
+        assert RSF_ALIASES.get("Gaza Strip") == "West Bank and Gaza"
+
+    def test_gaza_rsf_score_resolves_via_alias(self) -> None:
+        rsf_key = RSF_ALIASES.get("Gaza", "Gaza")
+        assert rsf_key in RSF_SCORES, f"RSF key {rsf_key!r} not found in RSF_SCORES"
+
+    def test_gaza_gdelt_cloud_alias_resolves_to_palestine(self) -> None:
+        from backend.config import settings
+        assert settings.GDELT_CLOUD_ALIASES.get("Gaza") == "Palestine"
+
+    def test_gaza_strip_gdelt_cloud_alias_resolves_to_palestine(self) -> None:
+        from backend.config import settings
+        assert settings.GDELT_CLOUD_ALIASES.get("Gaza Strip") == "Palestine"

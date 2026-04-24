@@ -270,6 +270,10 @@ class TestCpjAliases:
         assert "West Bank" in CPJ_ALIASES
         assert CPJ_ALIASES["West Bank"] == _CPJ_REAL_COUNTRY
 
+    def test_gaza_strip_alias_defined(self) -> None:
+        assert "Gaza Strip" in CPJ_ALIASES
+        assert CPJ_ALIASES["Gaza Strip"] == _CPJ_REAL_COUNTRY
+
     def test_get_incidents_via_palestine_alias(
         self, real_palestine_connector: CPJConnector
     ) -> None:

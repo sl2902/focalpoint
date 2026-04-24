@@ -28,6 +28,7 @@ DEFAULT_CSV_PATH = Path(__file__).parent.parent / "data" / "cpj_incidents.csv"
 CPJ_ALIASES: dict[str, str] = {
     "Palestine": "Israel and the Occupied Palestinian Territory",
     "Gaza": "Israel and the Occupied Palestinian Territory",
+    "Gaza Strip": "Israel and the Occupied Palestinian Territory",
     "West Bank": "Israel and the Occupied Palestinian Territory",
     "Israel": "Israel and the Occupied Palestinian Territory",
 }

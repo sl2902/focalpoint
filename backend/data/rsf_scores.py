@@ -189,6 +189,8 @@ RSF_ALIASES: dict[str, str] = {
     "Syria": "Syrian Arab Republic",
     "Yemen": "Yemen, Rep.",
     "Palestine": "West Bank and Gaza",
+    "Gaza": "West Bank and Gaza",
+    "Gaza Strip": "West Bank and Gaza",
     "Vietnam": "Viet Nam",
     "Venezuela": "Venezuela, RB",
     "Bolivia (Plurinational State of)": "Bolivia",

@@ -216,22 +216,26 @@ class TestGetRegionAlerts:
 
     def test_insufficient_data_when_no_events(self, client: TestClient) -> None:
         """INSUFFICIENT_DATA requires zero signal from all sources including CPJ/RSF."""
+        from unittest.mock import patch
+
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud_empty
         empty_gdelt = MagicMock()
         empty_gdelt.fetch_articles = AsyncMock(
             return_value=GdeltResponse(articles=[], aggregate_tone=0.0)
         )
         app.dependency_overrides[get_gdelt_connector] = lambda: empty_gdelt
-        # Zero CPJ stats so historical fallback cannot fire (RSF for Gaza uses
-        # RSF_SCORES lookup — Gaza/Palestine typically has a non-zero RSF entry,
-        # so we must also zero out CPJ to drive historical_total to 0).
+        # Zero CPJ stats so historical fallback cannot fire.
+        # RSF for Gaza now resolves via RSF_ALIASES to "West Bank and Gaza" (27.41),
+        # so we also patch RSF_SCORES to return 0.0 for all keys to eliminate the
+        # RSF baseline contribution and reach true INSUFFICIENT_DATA.
         zero_cpj = MagicMock()
         zero_cpj.get_country_stats = MagicMock(
             return_value=CountryStats(country="Gaza", total_incidents=0, incidents_per_year=0.0, earliest_year=0, latest_year=0)
         )
         app.dependency_overrides[get_cpj_connector] = lambda: zero_cpj
 
-        resp = client.get("/alerts/Gaza")
+        with patch("backend.api.routes.alerts.RSF_SCORES", {}):
+            resp = client.get("/alerts/Gaza")
         assert resp.status_code == 200
         assert resp.json()["severity"] == "INSUFFICIENT_DATA"
 

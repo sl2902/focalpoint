@@ -163,11 +163,29 @@ class TestAlertOutput:
         alert = AlertOutput(**_valid_alert(severity=severity))
         assert alert.severity == severity
 
-    def test_invalid_citation_free_text_rejected(self) -> None:
+    def test_all_invalid_citations_raises(self) -> None:
+        """When every citation id is invalid the validator raises — no valid sources remain."""
         with pytest.raises(ValidationError):
             AlertOutput(**_valid_alert(source_citations=[
                 {"id": "ACLED event near Gaza", "description": "some description"}
             ]))
+
+    def test_mixed_citations_strips_invalid_keeps_valid(self) -> None:
+        """One valid + one invalid → invalid is stripped, valid one is kept."""
+        alert = AlertOutput(**_valid_alert(source_citations=[
+            {"id": "conflict_PSE20240415", "description": "Armed Clash — Gaza"},
+            {"id": "free form text", "description": "bad citation"},
+        ]))
+        assert len(alert.source_citations) == 1
+        assert alert.source_citations[0].id == "conflict_PSE20240415"
+
+    def test_invalid_citation_stripped_leaves_empty_for_insufficient_data(self) -> None:
+        """INSUFFICIENT_DATA + one invalid citation → stripped to empty list (no error)."""
+        alert = AlertOutput(**_valid_alert(
+            severity="INSUFFICIENT_DATA",
+            source_citations=[{"id": "bad id", "description": "desc"}],
+        ))
+        assert alert.source_citations == []
 
     # ------------------------------------------------------------------
     # CPJ / RSF historical-source citation IDs

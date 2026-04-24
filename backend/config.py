@@ -36,7 +36,10 @@ class Settings(BaseSettings):
     # recognises. Add entries here when the API returns 0 events for a region
     # that has confirmed activity under a different name.
     # Note: "Syrian Arab Republic" tested and rejected with 400 — "Syria" is correct.
-    GDELT_CLOUD_ALIASES: dict[str, str] = {}
+    GDELT_CLOUD_ALIASES: dict[str, str] = {
+        "Gaza": "Palestine",
+        "Gaza Strip": "Palestine",
+    }
 
 
 settings = Settings()

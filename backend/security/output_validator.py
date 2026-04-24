@@ -79,25 +79,35 @@ class AlertOutput(BaseModel):
     @field_validator("source_citations", mode="after")
     @classmethod
     def citations_must_be_real(cls, v: list[Citation], info) -> list[Citation]:
-        """Each citation id must be a URL or GDELT Cloud event ID.
+        """Strip invalid citation IDs rather than rejecting the whole response.
 
-        Rejects free-form text masquerading as a citation — prevents
-        Gemma 4 from hallucinating plausible-sounding but invalid sources.
-        At least one citation is required unless severity is INSUFFICIENT_DATA.
+        Valid formats: http/https URL, GDELT Cloud event ID (conflict_*),
+        CPJ bare or namespaced (CPJ / CPJ:<detail>),
+        RSF bare or namespaced (RSF / RSF:<detail>).
+
+        Invalid entries are removed with a warning log. A ValueError is raised
+        only when every citation is invalid (and severity is not INSUFFICIENT_DATA),
+        since an alert with zero sources cannot be trusted.
         """
         severity = (info.data or {}).get("severity")
-        if severity != "INSUFFICIENT_DATA" and len(v) == 0:
-            raise ValueError("source_citations must contain at least one citation when severity is not INSUFFICIENT_DATA")
+        valid = []
         for citation in v:
-            if not (
+            if (
                 _URL_RE.match(citation.id)
                 or _GDELT_CLOUD_ID_RE.match(citation.id)
                 or _HISTORICAL_SOURCE_RE.match(citation.id)
             ):
-                raise ValueError(
-                    f"Citation id must be a URL, GDELT Cloud event ID, or CPJ/RSF source, got: {citation.id!r}"
+                valid.append(citation)
+            else:
+                logger.warning(
+                    f"output_validator: stripping invalid citation id {citation.id!r}"
                 )
-        return v
+        if severity != "INSUFFICIENT_DATA" and len(valid) == 0:
+            raise ValueError(
+                "source_citations contains no valid citation IDs — "
+                "all entries were stripped or the list was empty"
+            )
+        return valid
 
 
 # ---------------------------------------------------------------------------
