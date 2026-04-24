@@ -40,8 +40,12 @@ async def refresh_one_watch_zone(app) -> None:  # noqa: ANN001
     generator = app.state.alert_generator
 
     try:
-        events = await gdelt_cloud.fetch_events(region)
-        gdelt_resp = await gdelt.fetch_articles(region)
+        gdelt_cloud_country = settings.GDELT_CLOUD_ALIASES.get(region, region)
+        has_fatalities = region not in settings.NO_FATALITIES_FILTER_COUNTRIES
+        events = await gdelt_cloud.fetch_events(
+            gdelt_cloud_country, has_fatalities=has_fatalities
+        )
+        gdelt_resp = await gdelt.fetch_articles(f"conflict {region}")
         cpj_stats = cpj.get_country_stats(region)
         rsf_key = RSF_ALIASES.get(region, region)
         rsf_score = RSF_SCORES.get(rsf_key, 0.0)

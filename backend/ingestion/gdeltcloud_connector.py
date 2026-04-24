@@ -266,6 +266,7 @@ class GdeltCloudConnector:
         country: str,
         days: int = 1,
         limit: int = 20,
+        has_fatalities: bool = True,
     ) -> list[GdeltCloudEvent]:
         """
         Return GDELT Cloud conflict events for *country*.
@@ -279,11 +280,15 @@ class GdeltCloudConnector:
         quota. The 8-hour TTL is intentional — do not reduce it.
 
         Args:
-            country: Country name recognised by the GDELT Cloud API.
-            days:    Used as cache key discriminator only — not sent to API.
-            limit:   Max events to return (default 20).
+            country:        Country name recognised by the GDELT Cloud API.
+            days:           Used as cache key discriminator only — not sent to API.
+            limit:          Max events to return (default 20).
+            has_fatalities: When True (default) filters to confirmed-fatality events only.
+                            Set False for countries where this filter returns 0 results —
+                            the fatalities field will be None rather than absent.
+                            See docs/data-sources.md — GDELT Cloud section.
         """
-        cache_key = f"gdeltcloud:{country}:{days}"
+        cache_key = f"gdeltcloud:{country}:{days}:{has_fatalities}"
 
         if self._redis:
             try:
@@ -297,10 +302,11 @@ class GdeltCloudConnector:
         params: dict[str, Any] = {
             "country": country,
             "event_family": "conflict",
-            "has_fatalities": "true",
             "sort": "recent",
             "limit": limit,
         }
+        if has_fatalities:
+            params["has_fatalities"] = "true"
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(

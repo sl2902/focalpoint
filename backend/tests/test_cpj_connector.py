@@ -16,11 +16,13 @@ get_country_stats.
 """
 
 from io import StringIO
+from pathlib import Path
 
 import pytest
 
 from backend.ingestion.cpj_connector import (
     CPJ_ALIASES,
+    DEFAULT_CSV_PATH,
     CPJConnector,
     CountryStats,
     CpjIncident,
@@ -305,3 +307,77 @@ class TestCpjAliases:
     ) -> None:
         incidents = real_palestine_connector.get_incidents("Germany")
         assert incidents == []
+
+    def test_israel_alias_defined(self) -> None:
+        """Israel has no separate CPJ country string — it shares the same
+        entry as Palestine: 'Israel and the Occupied Palestinian Territory'."""
+        assert "Israel" in CPJ_ALIASES
+        assert CPJ_ALIASES["Israel"] == _CPJ_REAL_COUNTRY
+
+    def test_get_incidents_via_israel_alias(
+        self, real_palestine_connector: CPJConnector
+    ) -> None:
+        incidents = real_palestine_connector.get_incidents("Israel")
+        assert len(incidents) == 2
+
+    def test_get_country_stats_via_israel_alias(
+        self, real_palestine_connector: CPJConnector
+    ) -> None:
+        stats = real_palestine_connector.get_country_stats("Israel")
+        assert stats.total_incidents == 2
+        assert stats.incidents_per_year > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Iran — no alias needed, "Iran" resolves directly in the CSV
+# ---------------------------------------------------------------------------
+
+# Synthetic CSV with Iran entries — matches the real CSV country string "Iran".
+_CSV_IRAN = (
+    "Name,Status,Date,Country,Journalist or Media Worker,"
+    "Motive,Type of Death,cpj.org URL\n"
+    "Zahra Kazemi,Killed,July 11 2003,Iran,Freelance,Confirmed,Murder,"
+    "https://cpj.org/data/people/zahra-kazemi/\n"
+    "Omid Reza Mir Sayafi,Killed,March 18 2009,Iran,Freelance,Confirmed,Imprisonment,"
+    "https://cpj.org/data/people/omid-reza-mir-sayafi/\n"
+    "Mehdi Rajabian,Killed,January 5 2015,Iran,Freelance,Confirmed,Imprisonment,"
+    "https://cpj.org/data/people/mehdi-rajabian/\n"
+)
+
+
+@pytest.fixture
+def iran_connector() -> CPJConnector:
+    return CPJConnector(source=StringIO(_CSV_IRAN))
+
+
+class TestIranCpjResolution:
+    def test_iran_not_in_cpj_aliases(self) -> None:
+        """Iran maps directly in the CSV — no alias required."""
+        assert "Iran" not in CPJ_ALIASES
+
+    def test_iran_resolves_directly(self, iran_connector: CPJConnector) -> None:
+        incidents = iran_connector.get_incidents("Iran")
+        assert len(incidents) == 3
+
+    def test_iran_country_stats_has_incidents(
+        self, iran_connector: CPJConnector
+    ) -> None:
+        stats = iran_connector.get_country_stats("Iran")
+        assert stats.total_incidents == 3
+        assert stats.incidents_per_year > 0.0
+
+    def test_iran_stats_country_name_preserved(
+        self, iran_connector: CPJConnector
+    ) -> None:
+        stats = iran_connector.get_country_stats("Iran")
+        assert stats.country == "Iran"
+
+    def test_iran_real_csv_has_incidents(self) -> None:
+        """Smoke test: real CPJ CSV must contain Iran incidents (direct lookup)."""
+        if not DEFAULT_CSV_PATH.exists():
+            pytest.skip("Real CPJ CSV not present")
+        connector = CPJConnector()
+        stats = connector.get_country_stats("Iran")
+        assert stats.total_incidents > 0, (
+            "Iran has 0 CPJ incidents — check that the CSV uses 'Iran' as the country name"
+        )

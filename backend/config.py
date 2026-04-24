@@ -20,10 +20,23 @@ class Settings(BaseSettings):
 
     # Background alert scheduler
     WATCH_ZONES: list[str] = [
-        "Palestine", "Israel", "Ukraine", "Sudan", "Myanmar", "Yemen", "Syria"
+        "Palestine", "Israel", "Iran", "Ukraine", "Sudan", "Myanmar", "Yemen", "Syria"
     ]
     ALERTS_DB_PATH: str = "backend/data/alerts.db"
     SCHEDULER_ENABLED: bool = True
+
+    # Countries where GDELT Cloud's has_fatalities=true filter returns 0 events.
+    # The connector will omit the filter for these and rely on the fatalities
+    # field being None rather than absent. Confirmed via verify_watch_zones.py.
+    NO_FATALITIES_FILTER_COUNTRIES: set[str] = {
+        "Iran", "Sudan", "Myanmar", "Yemen", "Syria"
+    }
+
+    # Maps FocalPoint region names to the country string the GDELT Cloud API
+    # recognises. Add entries here when the API returns 0 events for a region
+    # that has confirmed activity under a different name.
+    # Note: "Syrian Arab Republic" tested and rejected with 400 — "Syria" is correct.
+    GDELT_CLOUD_ALIASES: dict[str, str] = {}
 
 
 settings = Settings()

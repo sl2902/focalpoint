@@ -23,6 +23,7 @@ import pytest
 from backend.ingestion.cpj_connector import CountryStats
 from backend.ingestion.gdelt_connector import GdeltArticle
 from backend.ingestion.gdeltcloud_connector import GdeltCloudEvent
+from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
 from backend.alerts.severity_scorer import (
     SeverityLevel,
     SeverityResult,
@@ -353,21 +354,96 @@ class TestCriticalLevel:
 
 
 class TestInsufficientData:
-    def test_no_events_and_no_gdelt_returns_insufficient(self) -> None:
+    def test_no_events_no_gdelt_no_historical_returns_insufficient(self) -> None:
+        """INSUFFICIENT_DATA requires zero signal from all four sources."""
         result = score_severity(
             conflict_events=[],
             gdelt_articles=[],
-            cpj_stats=make_cpj(5.0, total=20),
-            rsf_press_freedom=20.0,
+            cpj_stats=make_cpj(0.0, total=0),
+            rsf_press_freedom=0.0,
         )
         assert result.level == SeverityLevel.INSUFFICIENT_DATA
         assert result.score == 0.0
         assert result.confidence == 0.0
         assert result.component_scores == {}
+        assert result.historical_only is False
 
     def test_insufficient_data_reasoning_is_descriptive(self) -> None:
-        result = score_severity([], [], make_cpj(0.0, total=0), 50.0)
+        result = score_severity([], [], make_cpj(0.0, total=0), 0.0)
         assert "insufficient" in result.reasoning.lower()
+
+    def test_non_zero_cpj_triggers_historical_fallback_not_insufficient(self) -> None:
+        """With CPJ data, empty live sources must not produce INSUFFICIENT_DATA."""
+        result = score_severity([], [], make_cpj(5.0, total=20), 20.0)
+        assert result.level != SeverityLevel.INSUFFICIENT_DATA
+        assert result.historical_only is True
+
+
+# ---------------------------------------------------------------------------
+# Historical fallback — CPJ + RSF only
+# ---------------------------------------------------------------------------
+
+
+class TestHistoricalFallback:
+    def test_syria_profile_produces_amber(self) -> None:
+        """Syria: CPJ 10.19/yr → cpj=15, RSF 15.82 → rsf=10, total=25 → AMBER."""
+        result = score_severity(
+            [], [], make_cpj(10.19, total=100), 15.82
+        )
+        assert result.level == SeverityLevel.AMBER
+        assert result.historical_only is True
+        assert result.score == pytest.approx(25.0)
+
+    def test_historical_only_flag_set(self) -> None:
+        result = score_severity([], [], make_cpj(2.0, total=10), 20.0)
+        assert result.historical_only is True
+
+    def test_historical_only_has_all_five_component_keys(self) -> None:
+        result = score_severity([], [], make_cpj(2.0, total=10), 20.0)
+        assert set(result.component_scores.keys()) == {
+            "fatalities", "event_type", "gdelt_tone", "cpj_rate", "rsf_baseline"
+        }
+
+    def test_live_components_are_zero_in_historical_fallback(self) -> None:
+        result = score_severity([], [], make_cpj(2.0, total=10), 20.0)
+        assert result.component_scores["fatalities"] == 0.0
+        assert result.component_scores["event_type"] == 0.0
+        assert result.component_scores["gdelt_tone"] == 0.0
+
+    def test_historical_confidence_is_below_normal_minimum(self) -> None:
+        """Historical-only confidence must be ≤ 0.30 — clearly degraded."""
+        result = score_severity([], [], make_cpj(2.0, total=10), 30.0)
+        assert result.confidence <= 0.30
+
+    def test_historical_confidence_deducted_for_zero_cpj(self) -> None:
+        result_with_cpj = score_severity([], [], make_cpj(1.0, total=5), 20.0)
+        result_zero_cpj = score_severity([], [], make_cpj(0.0, total=0), 20.0)
+        assert result_zero_cpj.confidence < result_with_cpj.confidence
+
+    def test_historical_reasoning_contains_historical_only_marker(self) -> None:
+        result = score_severity([], [], make_cpj(2.0, total=10), 20.0)
+        assert "HISTORICAL ONLY" in result.reasoning
+
+    def test_rsf_only_signal_still_produces_fallback(self) -> None:
+        """Even with zero CPJ, a non-zero RSF score should trigger the fallback."""
+        result = score_severity([], [], make_cpj(0.0, total=0), 20.0)
+        assert result.historical_only is True
+        # rsf=20.0 < 25 → _score_rsf returns 10.0
+        assert result.component_scores["rsf_baseline"] == 10.0
+
+    def test_high_cpj_rate_caps_at_amber(self) -> None:
+        """Maximum historical score is 15+10=25 → AMBER, never RED or CRITICAL."""
+        result = score_severity([], [], make_cpj(10.0, total=50), 0.0)
+        # rsf=0 → 10pts, cpj=15pts → 25 → AMBER
+        assert result.level in {SeverityLevel.AMBER, SeverityLevel.GREEN}
+        assert result.score <= 25.0
+
+    def test_green_for_low_risk_country_without_live_data(self) -> None:
+        """Low CPJ rate + moderate RSF → GREEN even without live data."""
+        # cpj=0.5/yr → 3pts, rsf=60.0 → 3pts, total=6 → GREEN
+        result = score_severity([], [], make_cpj(0.5, total=5), 60.0)
+        assert result.level == SeverityLevel.GREEN
+        assert result.historical_only is True
 
 
 # ---------------------------------------------------------------------------
@@ -554,3 +630,73 @@ class TestRecencyDecay:
 
         assert result_same_day.component_scores["fatalities"] == 30.0
         assert result_thirty_days_later.component_scores["fatalities"] == 8.0
+
+
+# ---------------------------------------------------------------------------
+# Iran — RSF alias resolution and score floor
+# ---------------------------------------------------------------------------
+
+
+class TestWatchZoneConfig:
+    """Verify config.py settings that control per-country data quality fixes."""
+
+    def test_iran_in_watch_zones(self) -> None:
+        from backend.config import settings
+        assert "Iran" in settings.WATCH_ZONES
+
+    def test_no_fatalities_filter_countries_covers_expected_set(self) -> None:
+        from backend.config import settings
+        expected = {"Iran", "Sudan", "Myanmar", "Yemen", "Syria"}
+        assert expected == settings.NO_FATALITIES_FILTER_COUNTRIES
+
+    def test_palestine_not_in_no_fatalities_filter(self) -> None:
+        """Palestine has confirmed fatalities events — keep the filter on."""
+        from backend.config import settings
+        assert "Palestine" not in settings.NO_FATALITIES_FILTER_COUNTRIES
+
+    def test_gdelt_cloud_aliases_syria_not_aliased(self) -> None:
+        """'Syrian Arab Republic' returns 400 from the GDELT Cloud API —
+        Syria must be queried as 'Syria' (no alias)."""
+        from backend.config import settings
+        assert "Syria" not in settings.GDELT_CLOUD_ALIASES
+
+    def test_gdelt_cloud_aliases_passthrough_for_unlisted(self) -> None:
+        from backend.config import settings
+        assert settings.GDELT_CLOUD_ALIASES.get("Palestine", "Palestine") == "Palestine"
+
+
+class TestIranRsfResolution:
+    def test_iran_alias_maps_to_islamic_rep(self) -> None:
+        """RSF_ALIASES must translate "Iran" to the RSF index key."""
+        assert RSF_ALIASES.get("Iran") == "Iran, Islamic Rep."
+
+    def test_iran_rsf_score_resolves_via_alias(self) -> None:
+        """Two-step lookup used in routes: RSF_ALIASES.get(region, region) then RSF_SCORES."""
+        rsf_key = RSF_ALIASES.get("Iran", "Iran")
+        score = RSF_SCORES.get(rsf_key, 0.0)
+        assert score == pytest.approx(16.22)
+
+    def test_iran_rsf_score_gives_max_baseline(self) -> None:
+        """16.22 < 25 → _score_rsf must return 10.0 (max baseline contribution)."""
+        assert _score_rsf(16.22) == 10.0
+
+    def test_iran_zero_gdelt_events_produces_green_despite_high_rsf_risk(self) -> None:
+        """Documents the known scoring gap: with 0 GDELT Cloud events, fatalities and
+        event_type both score 0, making GREEN achievable even for high-risk countries.
+        Root cause: has_fatalities=True filter in GdeltCloudConnector may return 0
+        events for Iran — use has_fatalities=False to widen the query."""
+        cpj = make_cpj(0.75, total=21)   # ~Iran's real CPJ rate
+        articles = [make_article()]
+
+        result = score_severity(
+            [],            # 0 GDELT Cloud events — simulates the Iran failure mode
+            articles,
+            cpj,
+            16.22,         # Iran's RSF score
+            gdelt_aggregate_tone=-3.0,
+        )
+        # fatalities=0, event_type=0, tone=5, cpj=3, rsf=10 → total=18 → GREEN
+        assert result.level == SeverityLevel.GREEN
+        assert result.component_scores["fatalities"] == 0.0
+        assert result.component_scores["event_type"] == 0.0
+        assert result.component_scores["rsf_baseline"] == 10.0

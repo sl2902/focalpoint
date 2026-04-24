@@ -350,7 +350,7 @@ class TestCacheMiss:
 
         # Verify the key and TTL — payload is validated via round-trip
         call_args = mock_redis.set.call_args
-        assert call_args[0][0] == "gdeltcloud:Syria:1"
+        assert call_args[0][0] == "gdeltcloud:Syria:1:True"
         assert call_args[1]["ex"] == GDELT_CLOUD_CACHE_TTL
         # Payload must be JSON-deserializable back to a list of event dicts
         payload = json.loads(call_args[0][1])
@@ -377,7 +377,7 @@ class TestCacheMiss:
             await connector.fetch_events("Ukraine", days=7)
 
         # Redis get must have been called with the correct key
-        mock_redis.get.assert_called_once_with("gdeltcloud:Ukraine:7")
+        mock_redis.get.assert_called_once_with("gdeltcloud:Ukraine:7:True")
 
 
 # ---------------------------------------------------------------------------
@@ -638,4 +638,65 @@ class TestParameters:
             )
             await connector.fetch_events("Sudan", days=14)
 
-        mock_redis.get.assert_called_once_with("gdeltcloud:Sudan:14")
+        mock_redis.get.assert_called_once_with("gdeltcloud:Sudan:14:True")
+
+    async def test_has_fatalities_false_omits_filter_from_params(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        """has_fatalities=False must not send has_fatalities to the API — for
+        countries like Iran where the filter returns 0 results."""
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            await connector.fetch_events("Iran", days=7, has_fatalities=False)
+
+        _, kwargs = mock_http_client.get.call_args
+        params = kwargs["params"]
+        assert params["country"] == "Iran"
+        assert "has_fatalities" not in params
+
+    async def test_has_fatalities_false_uses_distinct_cache_key(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        """Cache keys for has_fatalities=True and False must not collide."""
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            await connector.fetch_events("Iran", days=7, has_fatalities=False)
+
+        mock_redis.get.assert_called_once_with("gdeltcloud:Iran:7:False")
+
+    async def test_iran_days_7_not_forwarded_to_api(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        """days is a cache-key discriminator only — the GDELT Cloud API does
+        not accept a date-window parameter. Increasing days from 1 to 7 changes
+        the cache key but does not change what the API returns."""
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            await connector.fetch_events("Iran", days=7)
+
+        _, kwargs = mock_http_client.get.call_args
+        assert "days" not in kwargs["params"]

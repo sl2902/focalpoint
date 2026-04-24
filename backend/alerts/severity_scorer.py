@@ -50,6 +50,7 @@ class SeverityResult(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)    # 0 = no data, 1 = full coverage
     reasoning: str
     component_scores: dict[str, float]            # per-source breakdown
+    historical_only: bool = False                 # True when no live data — CPJ+RSF fallback used
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +184,12 @@ def _score_cpj_rate(stats: CountryStats) -> float:
 
 
 def _score_rsf(rsf_press_freedom: float) -> float:
-    """0–10 pts.  Inverse of RSF press freedom score — lower freedom = higher risk."""
+    """0–10 pts.  Inverse of RSF press freedom score — lower freedom = higher risk.
+
+    0.0 is the sentinel for "country not in RSF index" — treated as no signal (0 pts).
+    """
+    if rsf_press_freedom == 0.0:
+        return 0.0
     if rsf_press_freedom >= 75.0:
         return 0.0
     if rsf_press_freedom >= 50.0:
@@ -261,15 +267,57 @@ def score_severity(
         gdelt_aggregate_tone: Mean tone from GDELT Doc API timelinetone endpoint.
     """
     if not conflict_events and not gdelt_articles:
+        # No live data — attempt a CPJ + RSF historical fallback before giving up.
+        cpj_component = _score_cpj_rate(cpj_stats)
+        rsf_component = _score_rsf(rsf_press_freedom)
+        historical_total = cpj_component + rsf_component
+
+        if historical_total == 0.0:
+            # Genuinely no signal from any source.
+            return SeverityResult(
+                level=SeverityLevel.INSUFFICIENT_DATA,
+                score=0.0,
+                confidence=0.0,
+                historical_only=False,
+                reasoning=(
+                    "Insufficient data — no live conflict events, no GDELT articles,"
+                    " and no historical CPJ/RSF signal available."
+                ),
+                component_scores={},
+            )
+
+        # Historical-only fallback: score from CPJ + RSF alone.
+        # Max possible = 15 + 10 = 25, so ceiling is AMBER.
+        level = _level_from_score(historical_total)
+        hist_conf = 0.30
+        if cpj_stats.total_incidents == 0:
+            hist_conf -= 0.10
+        if rsf_press_freedom == 0.0:
+            hist_conf -= 0.10
+        hist_conf = round(max(hist_conf, 0.10), 2)
+        hist_components: dict[str, float] = {
+            "fatalities": 0.0,
+            "event_type": 0.0,
+            "gdelt_tone": 0.0,
+            "cpj_rate": cpj_component,
+            "rsf_baseline": rsf_component,
+        }
+        hist_reasoning = (
+            f"HISTORICAL ONLY — no live conflict events or GDELT articles available."
+            f" CPJ: {cpj_stats.incidents_per_year:.2f}/yr"
+            f" (cpj={cpj_component:.0f}/15)"
+            f" | RSF: {rsf_press_freedom:.1f}"
+            f" (rsf={rsf_component:.0f}/10)"
+            f" | composite={historical_total:.1f} → {level.value}"
+            f" (confidence={hist_conf:.2f})"
+        )
         return SeverityResult(
-            level=SeverityLevel.INSUFFICIENT_DATA,
-            score=0.0,
-            confidence=0.0,
-            reasoning=(
-                "Insufficient data — conflict events and GDELT articles both"
-                " returned empty results. Cannot produce a reliable safety assessment."
-            ),
-            component_scores={},
+            level=level,
+            score=round(historical_total, 2),
+            confidence=hist_conf,
+            historical_only=True,
+            reasoning=hist_reasoning,
+            component_scores=hist_components,
         )
 
     components: dict[str, float] = {

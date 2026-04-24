@@ -16,6 +16,7 @@ FastAPI matches the literal path /alerts/watchzone first.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path, Query, Request
+from loguru import logger
 
 from backend.alerts.severity_scorer import score_severity
 from backend.api.dependencies import (
@@ -26,6 +27,7 @@ from backend.api.dependencies import (
     get_gdelt_connector,
 )
 from backend.api.schemas import AlertResponse
+from backend.config import settings
 from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
@@ -56,6 +58,7 @@ async def get_watchzone_alerts(
     radius_km: float = Query(ge=1, le=500),
     label: str = Query(min_length=1, max_length=100),
     days: int = Query(default=1, ge=1, le=30),
+    db_path: str = Depends(get_alerts_db_path),
     gdelt_cloud: GdeltCloudConnector = Depends(get_gdelt_cloud_connector),
     gdelt: GdeltConnector = Depends(get_gdelt_connector),
     cpj: CPJConnector = Depends(get_cpj_connector),
@@ -65,6 +68,7 @@ async def get_watchzone_alerts(
     return await _build_alert(
         region=label,
         days=days,
+        db_path=db_path,
         gdelt_cloud=gdelt_cloud,
         gdelt=gdelt,
         cpj=cpj,
@@ -87,10 +91,13 @@ async def get_region_alerts(
     """Return the latest severity alert for a named region."""
     cached = await store.get_cached_alert(db_path, region.title())
     if cached is not None:
+        logger.info(f"alerts: cache hit for region={region.title()!r} — skipping Gemma 4")
         return cached
+    logger.info(f"alerts: cache miss for region={region.title()!r} — running live pipeline")
     return await _build_alert(
         region=region,
         days=days,
+        db_path=db_path,
         gdelt_cloud=gdelt_cloud,
         gdelt=gdelt,
         cpj=cpj,
@@ -102,14 +109,19 @@ async def _build_alert(
     *,
     region: str,
     days: int,
+    db_path: str,
     gdelt_cloud: GdeltCloudConnector,
     gdelt: GdeltConnector,
     cpj: CPJConnector,
     generator: AlertGenerator,
 ) -> AlertResponse:
     region = region.title()
-    events = await gdelt_cloud.fetch_events(region, days=days)
-    gdelt_resp = await gdelt.fetch_articles(region)
+    gdelt_cloud_country = settings.GDELT_CLOUD_ALIASES.get(region, region)
+    has_fatalities = region not in settings.NO_FATALITIES_FILTER_COUNTRIES
+    events = await gdelt_cloud.fetch_events(
+        gdelt_cloud_country, days=days, has_fatalities=has_fatalities
+    )
+    gdelt_resp = await gdelt.fetch_articles(f"conflict {region}")
     cpj_stats = cpj.get_country_stats(region)
     rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
@@ -121,6 +133,7 @@ async def _build_alert(
         rsf_press_freedom=rsf_score,
         gdelt_aggregate_tone=gdelt_resp.aggregate_tone,
     )
+    logger.info(f"alerts: score breakdown for {region!r} — {severity_result.reasoning}")
 
     alert = generator.generate(
         conflict_events=events,
@@ -131,7 +144,7 @@ async def _build_alert(
         region=region,
     )
 
-    return AlertResponse(
+    response = AlertResponse(
         severity=severity_result.level.value,
         summary=alert.summary,
         source_citations=alert.source_citations,
@@ -139,3 +152,17 @@ async def _build_alert(
         timestamp=alert.timestamp,
         confidence=severity_result.confidence,
     )
+
+    await store.upsert_alert(
+        db_path=db_path,
+        region=region,
+        severity=response.severity,
+        summary=response.summary,
+        source_citations=response.source_citations,
+        confidence=response.confidence,
+        score=severity_result.score,
+        timestamp=alert.timestamp.isoformat(),
+    )
+    logger.info(f"alerts: live result for {region!r} written to cache")
+
+    return response

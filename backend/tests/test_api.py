@@ -214,12 +214,21 @@ class TestGetRegionAlerts:
         assert resp.status_code == 422
 
     def test_insufficient_data_when_no_events(self, client: TestClient) -> None:
+        """INSUFFICIENT_DATA requires zero signal from all sources including CPJ/RSF."""
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud_empty
         empty_gdelt = MagicMock()
         empty_gdelt.fetch_articles = AsyncMock(
             return_value=GdeltResponse(articles=[], aggregate_tone=0.0)
         )
         app.dependency_overrides[get_gdelt_connector] = lambda: empty_gdelt
+        # Zero CPJ stats so historical fallback cannot fire (RSF for Gaza uses
+        # RSF_SCORES lookup — Gaza/Palestine typically has a non-zero RSF entry,
+        # so we must also zero out CPJ to drive historical_total to 0).
+        zero_cpj = MagicMock()
+        zero_cpj.get_country_stats = MagicMock(
+            return_value=CountryStats(country="Gaza", total_incidents=0, incidents_per_year=0.0, earliest_year=0, latest_year=0)
+        )
+        app.dependency_overrides[get_cpj_connector] = lambda: zero_cpj
 
         resp = client.get("/alerts/Gaza")
         assert resp.status_code == 200
@@ -227,6 +236,7 @@ class TestGetRegionAlerts:
 
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
         app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
 
     def test_palestine_rsf_alias_applied(self, client: TestClient) -> None:
         """RSF_ALIASES must translate 'Palestine' → 'West Bank and Gaza' (27.41)."""
@@ -540,3 +550,25 @@ class TestGetRegionAlertsCache:
 
         assert resp.status_code == 200
         mock_gen.generate.assert_called_once()
+
+    def test_cache_populated_after_live_generation(
+        self, tmp_db_path: str
+    ) -> None:
+        """Live generation must write the result to SQLite so the next request is a cache hit."""
+        app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
+        app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
+        app.dependency_overrides[get_alert_generator] = _mock_generator
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        with TestClient(app) as c:
+            resp = c.get("/alerts/Gaza")
+        app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        cached = asyncio.get_event_loop().run_until_complete(
+            store.get_cached_alert(tmp_db_path, "Gaza")
+        )
+        assert cached is not None
+        assert cached.region == "Gaza"
+        assert cached.severity == resp.json()["severity"]
+        assert cached.summary == resp.json()["summary"]
