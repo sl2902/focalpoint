@@ -72,7 +72,7 @@ async def query(
     rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
 
-    use_web_search = len(gdelt_resp.articles) == 0 or gdelt_resp.aggregate_tone == 0.0
+    use_web_search = len(gdelt_resp.articles) == 0
 
     # Cache check — only for GDELT-backed responses.
     if not use_web_search and redis is not None:

@@ -215,7 +215,9 @@ class TestGetRegionAlerts:
         assert resp.status_code == 422
 
     def test_insufficient_data_when_no_events(self, client: TestClient) -> None:
-        """INSUFFICIENT_DATA requires zero signal from all sources including CPJ/RSF."""
+        """With empty articles the short-circuit no longer fires — generator is called
+        and returns RED (from the mock). Scorer reaches INSUFFICIENT_DATA (zero signal)
+        but the veto is suppressed because web search is active (articles empty)."""
         from unittest.mock import patch
 
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud_empty
@@ -224,10 +226,10 @@ class TestGetRegionAlerts:
             return_value=GdeltResponse(articles=[], aggregate_tone=0.0)
         )
         app.dependency_overrides[get_gdelt_connector] = lambda: empty_gdelt
-        # Zero CPJ stats so historical fallback cannot fire.
+        # Zero CPJ stats so scorer reaches INSUFFICIENT_DATA.
         # RSF for Gaza now resolves via RSF_ALIASES to "West Bank and Gaza" (27.41),
         # so we also patch RSF_SCORES to return 0.0 for all keys to eliminate the
-        # RSF baseline contribution and reach true INSUFFICIENT_DATA.
+        # RSF baseline contribution and reach true INSUFFICIENT_DATA from the scorer.
         zero_cpj = MagicMock()
         zero_cpj.get_country_stats = MagicMock(
             return_value=CountryStats(country="Gaza", total_incidents=0, incidents_per_year=0.0, earliest_year=0, latest_year=0)
@@ -237,11 +239,50 @@ class TestGetRegionAlerts:
         with patch("backend.api.routes.alerts.RSF_SCORES", {}):
             resp = client.get("/alerts/Gaza")
         assert resp.status_code == 200
-        assert resp.json()["severity"] == "INSUFFICIENT_DATA"
+        # Short-circuit does not fire (articles empty) → generator called → mock returns RED.
+        assert resp.json()["severity"] == "RED"
 
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
         app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
         app.dependency_overrides[get_cpj_connector] = _mock_cpj
+
+    def test_insufficient_data_with_articles_present_short_circuits(
+        self, client: TestClient
+    ) -> None:
+        """When articles ARE present and the scorer returns INSUFFICIENT_DATA, the
+        short-circuit fires — generator is NOT called.
+        The scorer is mocked directly because INSUFFICIENT_DATA is only reachable
+        through the real scorer when both conflict events AND articles are absent."""
+        from unittest.mock import patch
+
+        from backend.alerts.severity_scorer import SeverityLevel, SeverityResult
+
+        insufficient_result = SeverityResult(
+            level=SeverityLevel.INSUFFICIENT_DATA,
+            score=0.0,
+            confidence=0.0,
+            reasoning="no data",
+            component_scores={},
+        )
+        mock_gen = MagicMock()
+        mock_gen.generate = MagicMock(return_value=_ALERT_OUTPUT)
+        app.dependency_overrides[get_alert_generator] = lambda: mock_gen
+
+        # Articles present → short-circuit applies when scorer says INSUFFICIENT_DATA
+        articles_gdelt = MagicMock()
+        articles_gdelt.fetch_articles = AsyncMock(
+            return_value=GdeltResponse(articles=[_ARTICLE], aggregate_tone=0.0)
+        )
+        app.dependency_overrides[get_gdelt_connector] = lambda: articles_gdelt
+
+        with patch("backend.api.routes.alerts.score_severity", return_value=insufficient_result):
+            resp = client.get("/alerts/Gaza")
+        assert resp.status_code == 200
+        assert resp.json()["severity"] == "INSUFFICIENT_DATA"
+        mock_gen.generate.assert_not_called()
+
+        app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
+        app.dependency_overrides[get_alert_generator] = _mock_generator
 
     def test_palestine_rsf_alias_applied(self, client: TestClient) -> None:
         """RSF_ALIASES must translate 'Palestine' → 'West Bank and Gaza' (27.41)."""

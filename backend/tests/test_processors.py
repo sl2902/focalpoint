@@ -748,7 +748,9 @@ class TestAlertGeneratorWebSearch:
         kwargs = gemma.generate_alert.call_args[1]
         assert kwargs.get("use_web_search") is True
 
-    def test_use_web_search_true_when_aggregate_tone_zero(self):
+    def test_use_web_search_false_when_articles_present_tone_zero(self):
+        """Neutral tone (0.0) with articles present must NOT trigger web search.
+        Tone=0.0 is a legitimate neutral score, not a proxy for API failure."""
         gemma = _mock_gemma_client()
         gen = AlertGenerator(gemma)
         gen.generate(
@@ -760,7 +762,7 @@ class TestAlertGeneratorWebSearch:
             region=_REGION,
         )
         kwargs = gemma.generate_alert.call_args[1]
-        assert kwargs.get("use_web_search") is True
+        assert kwargs.get("use_web_search") is False
 
     def test_use_web_search_false_when_articles_present_and_tone_nonzero(self):
         gemma = _mock_gemma_client()
@@ -803,6 +805,58 @@ class TestAlertGeneratorWebSearch:
         )
         prompt_arg = gemma.generate_alert.call_args.args[0]
         assert "[WEB SEARCH AVAILABLE]" not in prompt_arg
+
+    def test_scorer_insufficient_data_veto_suppressed_when_web_search_true(self):
+        """articles=[], scorer=INSUFFICIENT_DATA, Gemma=RED → final severity=RED.
+        When web search is active the scorer's veto must not override Gemma's result."""
+        gemma = _mock_gemma_client(payload=_valid_alert_dict(severity="RED"))
+        gen = AlertGenerator(gemma)
+        severity_result = SeverityResult(
+            level=SeverityLevel("INSUFFICIENT_DATA"),
+            score=0.0,
+            confidence=0.0,
+            reasoning="no data",
+            component_scores={
+                "fatalities": 0.0, "event_type": 0.0, "gdelt_tone": 0.0,
+                "cpj_rate": 0.0, "rsf_baseline": 0.0,
+            },
+        )
+        alert = gen.generate(
+            conflict_events=[],
+            gdelt_articles=[],  # triggers use_web_search=True
+            gdelt_aggregate_tone=0.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+            severity_result=severity_result,
+        )
+        assert alert.severity == "RED"
+
+    def test_scorer_insufficient_data_veto_applied_when_web_search_false(self):
+        """articles present, scorer=INSUFFICIENT_DATA, Gemma=RED → final severity=INSUFFICIENT_DATA.
+        When articles are present web search is not active — the veto must still apply."""
+        gemma = _mock_gemma_client(payload=_valid_alert_dict(severity="RED"))
+        gen = AlertGenerator(gemma)
+        severity_result = SeverityResult(
+            level=SeverityLevel("INSUFFICIENT_DATA"),
+            score=0.0,
+            confidence=0.0,
+            reasoning="no data",
+            component_scores={
+                "fatalities": 0.0, "event_type": 0.0, "gdelt_tone": 0.0,
+                "cpj_rate": 0.0, "rsf_baseline": 0.0,
+            },
+        )
+        alert = gen.generate(
+            conflict_events=[_GDELT_EVENT],
+            gdelt_articles=[_GDELT_ARTICLE],  # use_web_search=False
+            gdelt_aggregate_tone=-5.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+            severity_result=severity_result,
+        )
+        assert alert.severity == "INSUFFICIENT_DATA"
 
 
 def _make_severity_result(level: str) -> SeverityResult:

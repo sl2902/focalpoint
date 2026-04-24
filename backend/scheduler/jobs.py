@@ -64,6 +64,7 @@ async def refresh_one_watch_zone(app) -> None:  # noqa: ANN001
             cpj_stats=cpj_stats,
             rsf_score=rsf_score,
             region=region,
+            journalist_query=f"journalist safety {region} current situation latest news",
             severity_result=severity_result,
         )
         await store.upsert_alert(

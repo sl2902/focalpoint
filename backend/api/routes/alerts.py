@@ -136,8 +136,10 @@ async def _build_alert(
     )
     logger.info(f"alerts: score breakdown for {region!r} — {severity_result.reasoning}")
 
-    # Short-circuit: no data at all — skip Gemma to avoid a quota call on empty context.
-    if severity_result.level == SeverityLevel.INSUFFICIENT_DATA:
+    # Short-circuit: no data AND articles present — skip Gemma to avoid a quota call on
+    # empty context. When articles are empty, fall through so the generator can use web
+    # search to find live sources the deterministic scorer could not see.
+    if severity_result.level == SeverityLevel.INSUFFICIENT_DATA and gdelt_resp.articles:
         from datetime import datetime, timezone
         response = AlertResponse(
             severity="INSUFFICIENT_DATA",
@@ -167,6 +169,7 @@ async def _build_alert(
         cpj_stats=cpj_stats,
         rsf_score=rsf_score,
         region=region,
+        journalist_query=f"journalist safety {region} current situation latest news",
         severity_result=severity_result,
     )
 

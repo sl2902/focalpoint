@@ -114,7 +114,9 @@ class AlertGenerator:
         Generate a validated alert for *region* from multi-source inputs.
 
         Web search is enabled automatically when GDELT Doc API provides no usable
-        articles (empty list or aggregate_tone == 0.0 indicating a failed fetch).
+        articles (empty list). When web search is active and the deterministic scorer
+        returns INSUFFICIENT_DATA, the scorer's veto is suppressed — Gemma may have
+        found live sources via web search that the scorer had no visibility into.
 
         Args:
             conflict_events:      Validated GdeltCloudEvent list for the target region.
@@ -132,7 +134,7 @@ class AlertGenerator:
         Returns:
             Validated AlertOutput. Always returns — never raises.
         """
-        use_web_search = len(gdelt_articles) == 0 or gdelt_aggregate_tone == 0.0
+        use_web_search = len(gdelt_articles) == 0
 
         if journalist_query:
             sanitised = sanitise_query(journalist_query).text
@@ -153,6 +155,9 @@ class AlertGenerator:
         alert = self._gemma.generate_alert(prompt, region, use_web_search=use_web_search)
 
         if severity_result is not None:
-            alert = _apply_max_severity(alert, severity_result)
+            # When web search was active, suppress the scorer's INSUFFICIENT_DATA veto.
+            # Gemma may have found live sources the deterministic scorer could not see.
+            if not (use_web_search and severity_result.level.value == "INSUFFICIENT_DATA"):
+                alert = _apply_max_severity(alert, severity_result)
 
         return alert
