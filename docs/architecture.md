@@ -77,20 +77,30 @@ Always cite your source event ID or URL.
 
 ## Layer 3 — Alert Scoring (backend/alerts/)
 
-Takes AlertOutput from processors.
-Applies severity scoring logic.
-Produces final SeverityAlert with GREEN/AMBER/RED/CRITICAL level.
+Takes validated Pydantic models from ingestion layer.
+Applies deterministic severity scoring logic (no Gemma 4 involved).
+Produces SeverityResult with GREEN/AMBER/RED/CRITICAL level.
 
-Scoring inputs:
-- Fatality count and recency (GDELT Cloud) — exponential decay with 7-day
-  half-life applied per event before bucketing: weight = 2^(-days/7),
-  so an event 7 days old contributes 50% of its raw fatality count
-- Event type — battles weighted higher than protests (GDELT Cloud CAMEO codes)
-- GDELT Doc API aggregate_tone — negative tone escalates severity;
-  derived from timelinetone endpoint, mean of non-zero 15-min windows
-- Historical journalist incident rate for country (CPJ)
-- RSF press freedom baseline for country
-- Proximity to journalist watch zone
+Scoring components (0–100 composite, capped):
+- Fatality count and recency (GDELT Cloud, 0–30 pts) — exponential decay
+  with 7-day half-life: weight = 2^(-days/7), so an event 7 days old
+  contributes 50% of its raw fatality count
+- Event type (GDELT Cloud CAMEO codes, 0–25 pts) — battles/strikes
+  weighted higher than protests
+- GDELT Doc API aggregate_tone (0–20 pts) — negative tone escalates severity
+- Historical journalist incident rate for country (CPJ, 0–15 pts)
+- RSF press freedom baseline for country (0–10 pts)
+
+Thresholds: GREEN 0–24 | AMBER 25–49 | RED 50–74 | CRITICAL 75+
+
+Historical fallback: when GDELT Cloud returns 0 events and GDELT Doc API
+returns 0 articles, score from CPJ + RSF alone (max 25 → AMBER ceiling).
+SeverityResult.historical_only is set to True.
+
+Historical risk floor: when GDELT Cloud returns 0 events but GDELT articles
+are present, apply a minimum AMBER floor if CPJ rate ≥ 3.0/yr OR
+RSF score < 30.0. SeverityResult.floor_applied and floor_reason record
+when this override fires.
 
 ## Layer 4 — API (backend/api/)
 

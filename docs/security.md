@@ -111,7 +111,8 @@ reaches the API layer.
 **AlertOutput schema:**
 ```python
 class Citation(BaseModel):
-    id: str          # GDELT Cloud event ID (e.g. "conflict_50be6d52") or URL
+    id: str          # GDELT Cloud event ID (e.g. "conflict_50be6d52"), URL,
+                     # or CPJ/RSF historical source (e.g. "CPJ", "RSF:Syria-2024")
     description: str # e.g. "Armed Clash — Gaza City, 2026-04-22 (5 fatalities)"
 
 class AlertOutput(BaseModel):
@@ -124,7 +125,10 @@ class AlertOutput(BaseModel):
 
     @field_validator("source_citations", mode="after")
     def citations_must_be_real(cls, v):
-        # Each citation.id must be a GDELT Cloud event ID or URL
+        # Each citation.id must match one of:
+        #   - https?:// URL
+        #   - GDELT Cloud event ID: ^conflict_[\w\-]+$
+        #   - CPJ/RSF historical source: ^(CPJ|RSF)(:.+)?$  e.g. "CPJ", "RSF:Syria-2024"
         # Rejects free-form text masquerading as citations
         ...
 ```
