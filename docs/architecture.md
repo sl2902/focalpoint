@@ -54,7 +54,7 @@ Validates Gemma 4 output before passing downstream.
 Files:
 - prompt_builder.py    # constructs grounded prompts with delimiters
 - gemma_client.py      # handles 26B API calls and response parsing
-- alert_generator.py   # produces typed AlertOutput models
+- alert_generator.py   # orchestrates prompt→Gemma→max-severity reconciliation
 
 Prompt structure (always):
 ```
@@ -160,12 +160,16 @@ Mobile: Expo
 
 ## Data Flow for Alert Generation
 
-1. Scheduler triggers ingestion every 15 minutes (GDELT cadence)
+1. Scheduler triggers ingestion on 8-hour rotating cycle (one watch zone per firing)
 2. Each connector fetches latest events with cursor pagination
-3. Validated models written to Redis with TTL
-4. Alert generator reads from Redis, builds grounded prompt
-5. Gemma 4 26B generates assessment with source citations
+3. Validated models passed directly to scoring and generation (Redis caches per-connector)
+4. Severity scorer runs deterministically — produces SeverityResult with score, level,
+   floor_applied, historical_only flags; if INSUFFICIENT_DATA, pipeline short-circuits
+   and Gemma is not called
+5. Alert generator builds grounded prompt and calls Gemma 4 26B for natural-language summary
 6. Output validated by Pydantic AlertOutput schema
-7. Severity scorer assigns GREEN/AMBER/RED/CRITICAL
-8. Final SeverityAlert stored in Redis and pushed to mobile clients
+7. Maximum severity rule applied: final severity = max(gemma_severity, scorer_severity)
+   using SEVERITY_ORDER (INSUFFICIENT_DATA=-1, GREEN=0, AMBER=1, RED=2, CRITICAL=3);
+   if Gemma is higher an elevation note is appended to the summary
+8. Final AlertResponse stored in SQLite (alerts.db) and served from cache on next request
 9. Mobile displays alert in feed and updates map marker
