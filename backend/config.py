@@ -20,7 +20,7 @@ class Settings(BaseSettings):
 
     # Background alert scheduler
     WATCH_ZONES: list[str] = [
-        "Palestine", "Israel", "Iran", "Ukraine", "Sudan", "Myanmar", "Yemen", "Syria"
+        "Palestine", "Gaza", "Israel", "Iran", "Ukraine", "Sudan", "Myanmar", "Yemen", "Syria"
     ]
     ALERTS_DB_PATH: str = "backend/data/alerts.db"
     SCHEDULER_ENABLED: bool = True
@@ -36,9 +36,11 @@ class Settings(BaseSettings):
     # recognises. Add entries here when the API returns 0 events for a region
     # that has confirmed activity under a different name.
     # Note: "Syrian Arab Republic" tested and rejected with 400 — "Syria" is correct.
+    # Note: "Gaza" uses "Gaza Strip" for GDELT Cloud queries. CPJ and RSF data for Gaza
+    # are sourced from the broader Palestinian territory via CPJ_ALIASES and RSF_ALIASES
+    # ("Israel and the Occupied Palestinian Territory" and "West Bank and Gaza" resp.)
     GDELT_CLOUD_ALIASES: dict[str, str] = {
-        "Gaza": "Palestine",
-        "Gaza Strip": "Palestine",
+        "Gaza": "Gaza Strip",
     }
 
 

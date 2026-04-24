@@ -34,7 +34,7 @@ from loguru import logger
 from backend.alerts.severity_scorer import score_severity
 from backend.config import settings
 from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
-from backend.ingestion.cpj_connector import CPJConnector
+from backend.ingestion.cpj_connector import CPJ_ALIASES, CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
 from backend.ingestion.gdeltcloud_connector import GdeltCloudConnector
 
@@ -301,10 +301,22 @@ async def main(force_no_fatalities: bool) -> None:
             if r["rsf_key"] != r["country"]
             else " (direct)"
         )
+        cpj_key = CPJ_ALIASES.get(r["country"], r["country"])
+        cpj_alias_note = (
+            f" (alias → {cpj_key!r})"
+            if cpj_key != r["country"]
+            else " (direct)"
+        )
+        gdelt_cloud_key = settings.GDELT_CLOUD_ALIASES.get(r["country"], r["country"])
+        gdelt_cloud_note = (
+            f" (alias → {gdelt_cloud_key!r})"
+            if gdelt_cloud_key != r["country"]
+            else ""
+        )
         print(f"\n{r['country']}")
-        print(f"  GDELT Cloud : {r['n_events']} events")
+        print(f"  GDELT Cloud : {r['n_events']} events{gdelt_cloud_note}")
         print(f"  GDELT Doc   : {r['n_articles']} articles  tone={r['tone']:+.2f}  query={r['gdelt_query_used']!r}")
-        print(f"  CPJ         : {r['cpj_total']} total incidents  {r['cpj_rate']:.2f}/yr")
+        print(f"  CPJ         : {r['cpj_total']} total incidents  {r['cpj_rate']:.2f}/yr{cpj_alias_note}")
         print(f"  RSF         : {r['rsf_score']:.2f}{rsf_alias_note}")
         print(f"  Reasoning   : {r['reasoning']}")
         if r["errors"]:
