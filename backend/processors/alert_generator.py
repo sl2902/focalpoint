@@ -113,6 +113,9 @@ class AlertGenerator:
         """
         Generate a validated alert for *region* from multi-source inputs.
 
+        Web search is enabled automatically when GDELT Doc API provides no usable
+        articles (empty list or aggregate_tone == 0.0 indicating a failed fetch).
+
         Args:
             conflict_events:      Validated GdeltCloudEvent list for the target region.
             gdelt_articles:       Validated GDELT articles for the target query.
@@ -129,6 +132,8 @@ class AlertGenerator:
         Returns:
             Validated AlertOutput. Always returns — never raises.
         """
+        use_web_search = len(gdelt_articles) == 0 or gdelt_aggregate_tone == 0.0
+
         if journalist_query:
             sanitised = sanitise_query(journalist_query).text
         else:
@@ -142,9 +147,10 @@ class AlertGenerator:
             rsf_score=rsf_score,
             region=region,
             sanitised_query=sanitised,
+            use_web_search=use_web_search,
         )
 
-        alert = self._gemma.generate_alert(prompt, region)
+        alert = self._gemma.generate_alert(prompt, region, use_web_search=use_web_search)
 
         if severity_result is not None:
             alert = _apply_max_severity(alert, severity_result)

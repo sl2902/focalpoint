@@ -40,6 +40,14 @@ _GENERATION_CONFIG = genai_types.GenerateContentConfig(
     response_mime_type="application/json",
 )
 
+# Web search config: same temperature but includes the Google Search grounding
+# tool. response_mime_type is omitted — it is incompatible with tool use.
+_WEB_SEARCH_GENERATION_CONFIG = genai_types.GenerateContentConfig(
+    temperature=0.0,
+    max_output_tokens=1024,
+    tools=[{"google_search": {}}],
+)
+
 
 def _extract_json(raw_text: str) -> dict:
     """
@@ -63,7 +71,9 @@ class GemmaClient:
         key = api_key or settings.GOOGLE_AI_STUDIO_API_KEY
         self._client = genai.Client(api_key=key)
 
-    def generate_alert(self, prompt: str, region: str) -> AlertOutput:
+    def generate_alert(
+        self, prompt: str, region: str, use_web_search: bool = False
+    ) -> AlertOutput:
         """
         Send *prompt* to Gemma 4 26B and return a validated AlertOutput.
 
@@ -72,17 +82,21 @@ class GemmaClient:
         fallback so the caller always receives a well-formed AlertOutput.
 
         Args:
-            prompt: Fully assembled prompt from prompt_builder.build_prompt.
-            region: Region label threaded into the fallback AlertOutput.
+            prompt:         Fully assembled prompt from prompt_builder.build_prompt.
+            region:         Region label threaded into the fallback AlertOutput.
+            use_web_search: When True, enables the Google Search grounding tool so
+                            the model can fetch live sources when GDELT Doc API has
+                            no usable articles.
 
         Returns:
             Validated AlertOutput. Never raises.
         """
+        config = _WEB_SEARCH_GENERATION_CONFIG if use_web_search else _GENERATION_CONFIG
         try:
             response = self._client.models.generate_content(
                 model=_BACKEND_MODEL,
                 contents=prompt,
-                config=_GENERATION_CONFIG,
+                config=config,
             )
         except Exception as exc:
             logger.warning(
@@ -117,7 +131,7 @@ class GemmaClient:
                 retry_response = self._client.models.generate_content(
                     model=_BACKEND_MODEL,
                     contents=prompt,
-                    config=_GENERATION_CONFIG,
+                    config=config,
                 )
                 retry_text = retry_response.text
                 if retry_text:

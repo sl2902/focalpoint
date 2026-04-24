@@ -271,6 +271,30 @@ class TestBuildPrompt:
         data_pos = prompt.index("[RETRIEVED DATA]")
         assert note_pos < data_pos
 
+    # ------------------------------------------------------------------
+    # Web search instruction block
+    # ------------------------------------------------------------------
+
+    def test_web_search_block_present_when_use_web_search_true(self):
+        prompt = self._prompt(use_web_search=True)
+        assert "[WEB SEARCH AVAILABLE]" in prompt
+        assert "[END WEB SEARCH AVAILABLE]" in prompt
+
+    def test_web_search_block_absent_by_default(self):
+        prompt = self._prompt()
+        assert "[WEB SEARCH AVAILABLE]" not in prompt
+
+    def test_web_search_block_lists_trusted_sources(self):
+        prompt = self._prompt(use_web_search=True)
+        for source in ("Reuters", "AP News", "BBC", "Al Jazeera", "The Guardian", "France24"):
+            assert source in prompt
+
+    def test_web_search_block_appears_before_retrieved_data(self):
+        prompt = self._prompt(use_web_search=True)
+        ws_pos = prompt.index("[WEB SEARCH AVAILABLE]")
+        data_pos = prompt.index("[RETRIEVED DATA]")
+        assert ws_pos < data_pos
+
 
 # ---------------------------------------------------------------------------
 # _extract_json tests
@@ -469,6 +493,72 @@ class TestGemmaClient:
 
         assert result.severity == "INSUFFICIENT_DATA"
 
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_web_search_uses_web_search_config(self, mock_client_cls):
+        from backend.processors.gemma_client import _WEB_SEARCH_GENERATION_CONFIG
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            _valid_alert_dict()
+        )
+
+        client = GemmaClient(api_key="fake-key")
+        client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        config_used = mock_client.models.generate_content.call_args.kwargs["config"]
+        assert config_used is _WEB_SEARCH_GENERATION_CONFIG
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_no_web_search_uses_default_config(self, mock_client_cls):
+        from backend.processors.gemma_client import _GENERATION_CONFIG
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            _valid_alert_dict()
+        )
+
+        client = GemmaClient(api_key="fake-key")
+        client.generate_alert("prompt", _REGION, use_web_search=False)
+
+        config_used = mock_client.models.generate_content.call_args.kwargs["config"]
+        assert config_used is _GENERATION_CONFIG
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_web_search_config_has_tools(self, mock_client_cls):
+        from backend.processors.gemma_client import _WEB_SEARCH_GENERATION_CONFIG
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            _valid_alert_dict()
+        )
+
+        client = GemmaClient(api_key="fake-key")
+        client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        assert _WEB_SEARCH_GENERATION_CONFIG.tools is not None
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_web_search_retry_uses_same_config(self, mock_client_cls):
+        """Retry after INSUFFICIENT_DATA must reuse the web search config."""
+        from backend.processors.gemma_client import _WEB_SEARCH_GENERATION_CONFIG
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        bad = _valid_alert_dict(source_citations=[{"id": "not-valid", "description": "bad"}])
+        mock_client.models.generate_content.side_effect = [
+            _mock_genai_response(bad),
+            _mock_genai_response(_valid_alert_dict()),
+        ]
+
+        client = GemmaClient(api_key="fake-key")
+        client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        for call in mock_client.models.generate_content.call_args_list:
+            assert call.kwargs["config"] is _WEB_SEARCH_GENERATION_CONFIG
+
 
 # ---------------------------------------------------------------------------
 # AlertGenerator tests
@@ -600,6 +690,91 @@ class TestAlertGenerator:
 # ---------------------------------------------------------------------------
 # Maximum severity rule — _apply_max_severity and SEVERITY_ORDER
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# AlertGenerator — use_web_search auto-detection
+# ---------------------------------------------------------------------------
+
+
+def _mock_gemma_client(payload: dict | None = None) -> GemmaClient:
+    client = MagicMock(spec=GemmaClient)
+    client.generate_alert.return_value = AlertOutput.model_validate(
+        payload or _valid_alert_dict()
+    )
+    return client
+
+
+class TestAlertGeneratorWebSearch:
+    def test_use_web_search_true_when_articles_empty(self):
+        gemma = _mock_gemma_client()
+        gen = AlertGenerator(gemma)
+        gen.generate(
+            conflict_events=[_GDELT_EVENT],
+            gdelt_articles=[],
+            gdelt_aggregate_tone=-5.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+        )
+        kwargs = gemma.generate_alert.call_args[1]
+        assert kwargs.get("use_web_search") is True
+
+    def test_use_web_search_true_when_aggregate_tone_zero(self):
+        gemma = _mock_gemma_client()
+        gen = AlertGenerator(gemma)
+        gen.generate(
+            conflict_events=[_GDELT_EVENT],
+            gdelt_articles=[_GDELT_ARTICLE],
+            gdelt_aggregate_tone=0.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+        )
+        kwargs = gemma.generate_alert.call_args[1]
+        assert kwargs.get("use_web_search") is True
+
+    def test_use_web_search_false_when_articles_present_and_tone_nonzero(self):
+        gemma = _mock_gemma_client()
+        gen = AlertGenerator(gemma)
+        gen.generate(
+            conflict_events=[_GDELT_EVENT],
+            gdelt_articles=[_GDELT_ARTICLE],
+            gdelt_aggregate_tone=-5.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+        )
+        kwargs = gemma.generate_alert.call_args[1]
+        assert kwargs.get("use_web_search") is False
+
+    def test_web_search_prompt_includes_instruction_when_articles_empty(self):
+        gemma = _mock_gemma_client()
+        gen = AlertGenerator(gemma)
+        gen.generate(
+            conflict_events=[],
+            gdelt_articles=[],
+            gdelt_aggregate_tone=0.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+        )
+        prompt_arg = gemma.generate_alert.call_args.args[0]
+        assert "[WEB SEARCH AVAILABLE]" in prompt_arg
+
+    def test_no_web_search_prompt_omits_instruction_when_articles_present(self):
+        gemma = _mock_gemma_client()
+        gen = AlertGenerator(gemma)
+        gen.generate(
+            conflict_events=[_GDELT_EVENT],
+            gdelt_articles=[_GDELT_ARTICLE],
+            gdelt_aggregate_tone=-5.0,
+            cpj_stats=_CPJ_STATS,
+            rsf_score=_RSF_SCORE,
+            region=_REGION,
+        )
+        prompt_arg = gemma.generate_alert.call_args.args[0]
+        assert "[WEB SEARCH AVAILABLE]" not in prompt_arg
 
 
 def _make_severity_result(level: str) -> SeverityResult:

@@ -199,9 +199,19 @@ class TestAlertOutput:
                 {"id": citation_id, "description": "some description"}
             ]))
 
-    def test_empty_citations_list_rejected(self) -> None:
+    def test_empty_citations_list_rejected_for_non_insufficient_data(self) -> None:
         with pytest.raises(ValidationError):
             AlertOutput(**_valid_alert(source_citations=[]))
+
+    @pytest.mark.parametrize("severity", ["GREEN", "AMBER", "RED", "CRITICAL"])
+    def test_empty_citations_rejected_for_all_non_insufficient_data_severities(self, severity: str) -> None:
+        with pytest.raises(ValidationError):
+            AlertOutput(**_valid_alert(severity=severity, source_citations=[]))
+
+    def test_insufficient_data_severity_allows_empty_citations(self) -> None:
+        alert = AlertOutput(**_valid_alert(severity="INSUFFICIENT_DATA", source_citations=[]))
+        assert alert.severity == "INSUFFICIENT_DATA"
+        assert alert.source_citations == []
 
     def test_summary_too_short_rejected(self) -> None:
         with pytest.raises(ValidationError):

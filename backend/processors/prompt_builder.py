@@ -78,6 +78,7 @@ def build_prompt(
     rsf_score: float,
     region: str,
     sanitised_query: str,
+    use_web_search: bool = False,
 ) -> str:
     """
     Construct a grounded Gemma 4 prompt for conflict safety assessment.
@@ -94,6 +95,7 @@ def build_prompt(
         rsf_score:            RSF Press Freedom Index score for the country (0–100).
         region:               Human-readable region label (e.g. "northern Gaza").
         sanitised_query:      Query text already processed by security.sanitiser.
+        use_web_search:       When True, instruct the model to search for live news.
 
     Returns:
         Fully assembled prompt string ready to send to the Gemma 4 API.
@@ -107,6 +109,17 @@ def build_prompt(
         "rsf_press_freedom_score": rsf_score,
     }
     data_block = json.dumps(retrieved_data, indent=2, ensure_ascii=False)
+
+    web_search_block = (
+        "\n"
+        "[WEB SEARCH AVAILABLE]\n"
+        "GDELT Doc API returned no usable articles. Use your web search tool to find\n"
+        "recent news about the specific location described in the journalist's query.\n"
+        "Prioritise results from these trusted sources (in order of preference):\n"
+        "  Reuters, AP News, BBC, Al Jazeera, The Guardian, France24.\n"
+        "Cite each source you use by including its URL as the citation id.\n"
+        "[END WEB SEARCH AVAILABLE]\n"
+    ) if use_web_search else ""
 
     no_live_events = len(conflict_events) == 0
     data_gap_block = (
@@ -133,6 +146,7 @@ def build_prompt(
         "For GDELT Cloud events use format: \"<event_type> — <location>, <date> (<fatalities> fatalities)\".\n"
         "For news articles use the article title as the description.\n"
         "Citation descriptions must always be written in English regardless of the source article language.\n"
+        f"{web_search_block}"
         f"{data_gap_block}"
         "\n"
         "Your response MUST be valid JSON matching this schema exactly:\n"

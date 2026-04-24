@@ -72,18 +72,22 @@ class Citation(BaseModel):
 class AlertOutput(BaseModel):
     severity: Literal["GREEN", "AMBER", "RED", "CRITICAL", "INSUFFICIENT_DATA"]
     summary: str = Field(min_length=10, max_length=1000)
-    source_citations: list[Citation] = Field(min_length=1)
+    source_citations: list[Citation] = Field(default_factory=list)
     region: str
     timestamp: datetime
 
     @field_validator("source_citations", mode="after")
     @classmethod
-    def citations_must_be_real(cls, v: list[Citation]) -> list[Citation]:
+    def citations_must_be_real(cls, v: list[Citation], info) -> list[Citation]:
         """Each citation id must be a URL or GDELT Cloud event ID.
 
         Rejects free-form text masquerading as a citation — prevents
         Gemma 4 from hallucinating plausible-sounding but invalid sources.
+        At least one citation is required unless severity is INSUFFICIENT_DATA.
         """
+        severity = (info.data or {}).get("severity")
+        if severity != "INSUFFICIENT_DATA" and len(v) == 0:
+            raise ValueError("source_citations must contain at least one citation when severity is not INSUFFICIENT_DATA")
         for citation in v:
             if not (
                 _URL_RE.match(citation.id)

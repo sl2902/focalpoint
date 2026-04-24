@@ -24,6 +24,7 @@ from backend.api.dependencies import (
     get_cpj_connector,
     get_gdelt_cloud_connector,
     get_gdelt_connector,
+    get_redis,
 )
 from backend.api.main import app
 from backend.ingestion.cpj_connector import CountryStats
@@ -358,6 +359,148 @@ class TestPostQuery:
         assert resp.json()["severity"] in {
             "GREEN", "AMBER", "RED", "CRITICAL", "INSUFFICIENT_DATA"
         }
+
+    def test_fetch_articles_called_with_sanitised_query_text(self, tmp_db_path: str) -> None:
+        """gdelt.fetch_articles must receive the sanitised query text, not the region."""
+        mock_gdelt = _mock_gdelt()
+        app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
+        app.dependency_overrides[get_gdelt_connector] = lambda: mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
+        app.dependency_overrides[get_alert_generator] = _mock_generator
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        with TestClient(app) as c:
+            c.post("/query", json=self._VALID_BODY)
+        app.dependency_overrides.clear()
+
+        mock_gdelt.fetch_articles.assert_called_once()
+        call_arg = mock_gdelt.fetch_articles.call_args.args[0]
+        assert call_arg == self._VALID_BODY["text"]
+        assert call_arg != "Gaza"
+        assert not call_arg.startswith("conflict ")
+
+
+# ---------------------------------------------------------------------------
+# POST /query — Redis caching
+# ---------------------------------------------------------------------------
+
+
+class TestPostQueryCache:
+    _VALID_BODY = {
+        "text": "Is it safe to move to the northern district?",
+        "region": "Gaza",
+        "language": "en",
+    }
+    # Unique device ID so this class has its own rate-limit bucket separate
+    # from TestPostQuery, which exhausts the shared "unknown-device" bucket.
+    _HEADERS = {"device_id": "test-cache-suite"}
+
+    def _setup_overrides(self, tmp_db_path: str, gdelt_connector=None, redis_client=None):
+        app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
+        app.dependency_overrides[get_gdelt_connector] = gdelt_connector or _mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
+        app.dependency_overrides[get_alert_generator] = _mock_generator
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        if redis_client is not None:
+            app.dependency_overrides[get_redis] = lambda: redis_client
+
+    def test_response_cached_when_gdelt_articles_present(self, tmp_db_path: str) -> None:
+        """When GDELT articles are present (use_web_search=False), result is written to Redis."""
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        self._setup_overrides(tmp_db_path, redis_client=mock_redis)
+        with TestClient(app) as c:
+            resp = c.post("/query", json=self._VALID_BODY, headers=self._HEADERS)
+        app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        mock_redis.setex.assert_called_once()
+        key, ttl, _ = mock_redis.setex.call_args.args
+        assert key.startswith("query:Gaza:")
+        assert ttl == 3600
+
+    def test_response_not_cached_when_gdelt_articles_empty(self, tmp_db_path: str) -> None:
+        """When GDELT returns no articles (use_web_search=True), Redis write is skipped."""
+        empty_gdelt = MagicMock()
+        empty_gdelt.fetch_articles = AsyncMock(
+            return_value=GdeltResponse(articles=[], aggregate_tone=0.0)
+        )
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        self._setup_overrides(tmp_db_path, gdelt_connector=lambda: empty_gdelt, redis_client=mock_redis)
+        with TestClient(app) as c:
+            resp = c.post("/query", json=self._VALID_BODY, headers=self._HEADERS)
+        app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        mock_redis.setex.assert_not_called()
+
+    def test_cache_hit_returns_cached_response_without_calling_generator(self, tmp_db_path: str) -> None:
+        """A Redis cache hit must be returned immediately without invoking the generator."""
+        import json as _json
+        from datetime import datetime, timezone
+
+        cached_payload = {
+            "answer": "Cached safety assessment — do not travel.",
+            "severity": "AMBER",
+            "source_citations": [{"id": "conflict_test_001", "description": "Cached citation"}],
+            "region": "Gaza",
+            "timestamp": datetime(2026, 4, 23, 12, 0, 0, tzinfo=timezone.utc).isoformat(),
+            "was_sanitised": False,
+        }
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=_json.dumps(cached_payload))
+        mock_redis.setex = AsyncMock()
+
+        mock_gen = _mock_generator()
+        app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
+        app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
+        app.dependency_overrides[get_alert_generator] = lambda: mock_gen
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        app.dependency_overrides[get_redis] = lambda: mock_redis
+        with TestClient(app) as c:
+            resp = c.post("/query", json=self._VALID_BODY, headers=self._HEADERS)
+        app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json()["severity"] == "AMBER"
+        assert resp.json()["answer"] == "Cached safety assessment — do not travel."
+        mock_gen.generate.assert_not_called()
+
+    def test_cache_key_includes_region_and_query_hash(self, tmp_db_path: str) -> None:
+        """Cache key must follow pattern query:{region}:{hash}."""
+        mock_redis = AsyncMock()
+        mock_redis.get = AsyncMock(return_value=None)
+        mock_redis.setex = AsyncMock()
+
+        self._setup_overrides(tmp_db_path, redis_client=mock_redis)
+        with TestClient(app) as c:
+            c.post("/query", json=self._VALID_BODY, headers=self._HEADERS)
+        app.dependency_overrides.clear()
+
+        key = mock_redis.setex.call_args.args[0]
+        parts = key.split(":")
+        assert parts[0] == "query"
+        assert parts[1] == "Gaza"
+        assert len(parts[2]) == 16  # truncated sha256 hex
+
+    def test_no_cache_write_when_redis_unavailable(self, tmp_db_path: str) -> None:
+        """Missing Redis (None) must not cause any error — route completes normally."""
+        app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
+        app.dependency_overrides[get_gdelt_connector] = _mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
+        app.dependency_overrides[get_alert_generator] = _mock_generator
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        app.dependency_overrides[get_redis] = lambda: None
+        with TestClient(app) as c:
+            resp = c.post("/query", json=self._VALID_BODY, headers=self._HEADERS)
+        app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
