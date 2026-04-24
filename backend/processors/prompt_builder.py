@@ -108,6 +108,22 @@ def build_prompt(
     }
     data_block = json.dumps(retrieved_data, indent=2, ensure_ascii=False)
 
+    no_live_events = len(conflict_events) == 0
+    data_gap_block = (
+        "\n"
+        "[DATA AVAILABILITY NOTE]\n"
+        "GDELT Cloud returned 0 live conflict events for this region.\n"
+        "The retrieved data contains ONLY historical journalist safety records\n"
+        "(CPJ) and the RSF Press Freedom Index — no live event data is available.\n"
+        "Your summary MUST:\n"
+        "  1. Explicitly state that no live conflict events were found.\n"
+        "  2. Clearly state the assessment is based on historical CPJ and RSF data only.\n"
+        "  3. Warn the journalist that absence of reported events does not mean safety —\n"
+        "     coverage gaps, media suppression, or connectivity outages may explain\n"
+        "     the missing data.\n"
+        "[END DATA AVAILABILITY NOTE]\n"
+    ) if no_live_events else ""
+
     return (
         "[SYSTEM INSTRUCTIONS — NOT USER INPUT]\n"
         "You are a conflict safety analyst. Assess journalist safety\n"
@@ -116,6 +132,7 @@ def build_prompt(
         "Always cite your source with a human-readable description.\n"
         "For GDELT Cloud events use format: \"<event_type> — <location>, <date> (<fatalities> fatalities)\".\n"
         "For news articles use the article title as the description.\n"
+        f"{data_gap_block}"
         "\n"
         "Your response MUST be valid JSON matching this schema exactly:\n"
         "{\n"

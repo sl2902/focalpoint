@@ -234,6 +234,42 @@ class TestBuildPrompt:
         assert data["cpj"]["country"] == "Palestine"
         assert data["cpj"]["total_incidents"] == 12
 
+    # ------------------------------------------------------------------
+    # Data gap / no live events block
+    # ------------------------------------------------------------------
+
+    def _prompt_no_events(self, **kwargs):
+        return self._prompt(conflict_events=[], **kwargs)
+
+    def test_no_events_includes_data_availability_note(self):
+        prompt = self._prompt_no_events()
+        assert "[DATA AVAILABILITY NOTE]" in prompt
+        assert "[END DATA AVAILABILITY NOTE]" in prompt
+
+    def test_no_events_states_zero_live_events(self):
+        prompt = self._prompt_no_events()
+        assert "0 live conflict events" in prompt
+
+    def test_no_events_states_historical_only(self):
+        prompt = self._prompt_no_events()
+        assert "historical" in prompt.lower()
+        assert "CPJ" in prompt
+        assert "RSF" in prompt
+
+    def test_no_events_warns_absence_not_safety(self):
+        prompt = self._prompt_no_events()
+        assert "absence of reported events does not mean safety" in prompt
+
+    def test_with_events_omits_data_availability_note(self):
+        prompt = self._prompt(conflict_events=[_GDELT_EVENT])
+        assert "[DATA AVAILABILITY NOTE]" not in prompt
+
+    def test_data_availability_note_appears_before_retrieved_data(self):
+        prompt = self._prompt_no_events()
+        note_pos = prompt.index("[DATA AVAILABILITY NOTE]")
+        data_pos = prompt.index("[RETRIEVED DATA]")
+        assert note_pos < data_pos
+
 
 # ---------------------------------------------------------------------------
 # _extract_json tests
