@@ -132,6 +132,7 @@ def build_prompt(
         "Always cite your source with a human-readable description.\n"
         "For GDELT Cloud events use format: \"<event_type> — <location>, <date> (<fatalities> fatalities)\".\n"
         "For news articles use the article title as the description.\n"
+        "Citation descriptions must always be written in English regardless of the source article language.\n"
         f"{data_gap_block}"
         "\n"
         "Your response MUST be valid JSON matching this schema exactly:\n"
