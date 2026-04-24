@@ -34,6 +34,12 @@ _URL_RE = re.compile(r"^https?://\S+$")
 # Example: conflict_20260423_001
 _GDELT_CLOUD_ID_RE = re.compile(r"^conflict_[\w\-]+$")
 
+# Matches CPJ and RSF historical-source citations used when no live event data
+# is available.  Bare "CPJ" / "RSF" and namespaced variants ("CPJ:country-2024",
+# "RSF:Press Freedom Index") are all accepted.
+# Examples: "CPJ", "RSF", "CPJ:Syria-2024", "RSF:Press Freedom Index 2025"
+_HISTORICAL_SOURCE_RE = re.compile(r"^(CPJ|RSF)(:.+)?$")
+
 
 # ---------------------------------------------------------------------------
 # Layer 1 — Input schemas
@@ -79,9 +85,13 @@ class AlertOutput(BaseModel):
         Gemma 4 from hallucinating plausible-sounding but invalid sources.
         """
         for citation in v:
-            if not (_URL_RE.match(citation.id) or _GDELT_CLOUD_ID_RE.match(citation.id)):
+            if not (
+                _URL_RE.match(citation.id)
+                or _GDELT_CLOUD_ID_RE.match(citation.id)
+                or _HISTORICAL_SOURCE_RE.match(citation.id)
+            ):
                 raise ValueError(
-                    f"Citation id must be a URL or GDELT Cloud event ID, got: {citation.id!r}"
+                    f"Citation id must be a URL, GDELT Cloud event ID, or CPJ/RSF source, got: {citation.id!r}"
                 )
         return v
 

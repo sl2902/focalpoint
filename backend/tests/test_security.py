@@ -169,6 +169,36 @@ class TestAlertOutput:
                 {"id": "ACLED event near Gaza", "description": "some description"}
             ]))
 
+    # ------------------------------------------------------------------
+    # CPJ / RSF historical-source citation IDs
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("citation_id", [
+        "CPJ",
+        "RSF",
+        "CPJ:Syria-2024",
+        "RSF:Press Freedom Index 2025",
+        "CPJ:Israel and the Occupied Palestinian Territory",
+    ])
+    def test_cpj_rsf_citation_ids_accepted(self, citation_id: str) -> None:
+        alert = AlertOutput(**_valid_alert(source_citations=[
+            {"id": citation_id, "description": "Historical journalist safety data"}
+        ]))
+        assert alert.source_citations[0].id == citation_id
+
+    @pytest.mark.parametrize("citation_id", [
+        "CPJX",        # wrong prefix
+        "RSF_score",   # underscore not colon
+        "cpj",         # lowercase not accepted
+        "rsf:score",   # lowercase not accepted
+        "CPJ:",        # colon with nothing after
+    ])
+    def test_invalid_cpj_rsf_variants_rejected(self, citation_id: str) -> None:
+        with pytest.raises(ValidationError):
+            AlertOutput(**_valid_alert(source_citations=[
+                {"id": citation_id, "description": "some description"}
+            ]))
+
     def test_empty_citations_list_rejected(self) -> None:
         with pytest.raises(ValidationError):
             AlertOutput(**_valid_alert(source_citations=[]))
