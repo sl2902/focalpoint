@@ -217,6 +217,25 @@ class TestAlertOutput:
                 {"id": citation_id, "description": "some description"}
             ]))
 
+    def test_fallback_citation_id_accepted(self) -> None:
+        """FALLBACK:api-error must pass validation — it is an internal diagnostic citation."""
+        alert = AlertOutput(**_valid_alert(source_citations=[
+            {"id": "FALLBACK:api-error", "description": "Gemma 4 API call failed"}
+        ]))
+        assert alert.source_citations[0].id == "FALLBACK:api-error"
+
+    @pytest.mark.parametrize("citation_id", [
+        "FALLBACK:",        # missing slug
+        "fallback:api",     # lowercase not accepted
+        "FALLBACK:API",     # uppercase slug not accepted
+        "FALLBACK:api_err", # underscore not accepted
+    ])
+    def test_invalid_fallback_variants_rejected(self, citation_id: str) -> None:
+        with pytest.raises(ValidationError):
+            AlertOutput(**_valid_alert(source_citations=[
+                {"id": citation_id, "description": "some description"}
+            ]))
+
     def test_empty_citations_list_rejected_for_non_insufficient_data(self) -> None:
         with pytest.raises(ValidationError):
             AlertOutput(**_valid_alert(source_citations=[]))

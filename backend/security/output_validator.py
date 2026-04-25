@@ -40,6 +40,11 @@ _GDELT_CLOUD_ID_RE = re.compile(r"^conflict_[\w\-]+$")
 # Examples: "CPJ", "RSF", "CPJ:Syria-2024", "RSF:Press Freedom Index 2025"
 _HISTORICAL_SOURCE_RE = re.compile(r"^(CPJ|RSF)(:.+)?$")
 
+# Matches internal diagnostic fallback citations emitted by GemmaClient when the
+# API call fails.  Format: "FALLBACK:<slug>" (lowercase slug, hyphens allowed).
+# Example: "FALLBACK:api-error"
+_FALLBACK_RE = re.compile(r"^FALLBACK:[a-z][a-z0-9-]+$")
+
 
 # ---------------------------------------------------------------------------
 # Layer 1 — Input schemas
@@ -96,6 +101,7 @@ class AlertOutput(BaseModel):
                 _URL_RE.match(citation.id)
                 or _GDELT_CLOUD_ID_RE.match(citation.id)
                 or _HISTORICAL_SOURCE_RE.match(citation.id)
+                or _FALLBACK_RE.match(citation.id)
             ):
                 valid.append(citation)
             else:

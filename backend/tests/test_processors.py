@@ -587,6 +587,65 @@ class TestGemmaClient:
         assert len(result.source_citations) == 1
         assert result.source_citations[0].id == "conflict_PSE20260101"
 
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_fallback_citation_is_citation_dict(self, mock_client_cls):
+        """Fallback must return a Citation dict, not a bare string."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.side_effect = RuntimeError("API down")
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.generate_alert("prompt", _REGION)
+
+        assert result.severity == "INSUFFICIENT_DATA"
+        assert len(result.source_citations) == 1
+        assert result.source_citations[0].id == "FALLBACK:api-error"
+        assert result.source_citations[0].description == "Gemma 4 API call failed"
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_timeout_set_on_client(self, mock_client_cls):
+        """genai.Client must be constructed with http_options timeout=120."""
+        GemmaClient(api_key="fake-key")
+        _, kwargs = mock_client_cls.call_args
+        assert kwargs.get("http_options") == {"timeout": 120}
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_remote_protocol_error_retries_once(self, mock_client_cls):
+        """RemoteProtocolError on first call → retry → success returned (not fallback)."""
+        import httpx as _httpx
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.side_effect = [
+            _httpx.RemoteProtocolError("peer closed connection"),
+            _mock_genai_response(_valid_alert_dict()),
+        ]
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.generate_alert("prompt", _REGION)
+
+        assert result.severity == "RED"
+        assert mock_client.models.generate_content.call_count == 2
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_remote_protocol_error_retry_also_fails_returns_fallback(self, mock_client_cls):
+        """RemoteProtocolError on both attempts → fallback INSUFFICIENT_DATA returned."""
+        import httpx as _httpx
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.side_effect = [
+            _httpx.RemoteProtocolError("peer closed connection"),
+            _httpx.RemoteProtocolError("peer closed connection again"),
+        ]
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.generate_alert("prompt", _REGION)
+
+        assert result.severity == "INSUFFICIENT_DATA"
+        assert result.source_citations[0].id == "FALLBACK:api-error"
+        assert mock_client.models.generate_content.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # AlertGenerator tests
@@ -696,7 +755,7 @@ class TestAlertGenerator:
             {
                 "severity": "INSUFFICIENT_DATA",
                 "summary": "API failed — fallback response.",
-                "source_citations": ["FALLBACK:api-error"],
+                "source_citations": [{"id": "FALLBACK:api-error", "description": "Gemma 4 API call failed"}],
                 "region": _REGION,
                 "timestamp": datetime.utcnow().isoformat(),
             },

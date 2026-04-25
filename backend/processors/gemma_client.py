@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 
+import httpx
 from google import genai
 from google.genai import types as genai_types
 from loguru import logger
@@ -104,7 +105,7 @@ class GemmaClient:
 
     def __init__(self, api_key: str | None = None) -> None:
         key = api_key or settings.GOOGLE_AI_STUDIO_API_KEY
-        self._client = genai.Client(api_key=key)
+        self._client = genai.Client(api_key=key, http_options={"timeout": 120})
 
     def generate_alert(
         self, prompt: str, region: str, use_web_search: bool = False
@@ -133,6 +134,22 @@ class GemmaClient:
                 contents=prompt,
                 config=config,
             )
+        except httpx.RemoteProtocolError as exc:
+            logger.warning(
+                f"gemma_client: RemoteProtocolError for region={region!r}, retrying — {exc}"
+            )
+            try:
+                response = self._client.models.generate_content(
+                    model=_BACKEND_MODEL,
+                    contents=prompt,
+                    config=config,
+                )
+            except Exception as exc2:
+                logger.warning(
+                    f"gemma_client: retry after RemoteProtocolError failed for"
+                    f" region={region!r} — {type(exc2).__name__}: {exc2}"
+                )
+                return _fallback(region)
         except Exception as exc:
             logger.warning(
                 f"gemma_client: API call failed for region={region!r} — {type(exc).__name__}: {exc}"
@@ -188,7 +205,7 @@ def _fallback(region: str) -> AlertOutput:
         {
             "severity": "INSUFFICIENT_DATA",
             "summary": "Gemma 4 API call failed — safe fallback response.",
-            "source_citations": ["FALLBACK:api-error"],
+            "source_citations": [{"id": "FALLBACK:api-error", "description": "Gemma 4 API call failed"}],
             "region": region,
             "timestamp": datetime.utcnow().isoformat(),
         },
