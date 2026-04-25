@@ -70,6 +70,7 @@ async def refresh_one_watch_zone(app) -> None:  # noqa: ANN001
         await store.upsert_alert(
             db_path=app.state.db_path,
             region=region,
+            days=1,
             severity=alert.severity,
             summary=alert.summary,
             source_citations=alert.source_citations,

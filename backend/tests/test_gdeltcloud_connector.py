@@ -367,9 +367,9 @@ class TestCacheMiss:
             )
             events = await connector.fetch_events("Syria", days=1)
 
-        # days=1 → date_start == date_end == today (single day)
+        # days=1
         call_args = mock_redis.set.call_args
-        assert call_args[0][0] == "gdeltcloud:Syria:2026-04-25:2026-04-25:True"
+        assert call_args[0][0] == "gdeltcloud:Syria:1:True"
         assert call_args[1]["ex"] == GDELT_CLOUD_CACHE_TTL
         # Payload must be JSON-deserializable back to a list of event dicts
         payload = json.loads(call_args[0][1])
@@ -397,7 +397,7 @@ class TestCacheMiss:
             )
             await connector.fetch_events("Ukraine", days=7)
 
-        mock_redis.get.assert_called_once_with("gdeltcloud:Ukraine:2026-04-19:2026-04-25:True")
+        mock_redis.get.assert_called_once_with("gdeltcloud:Ukraine:7:True")
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +660,7 @@ class TestParameters:
             )
             await connector.fetch_events("Sudan", days=14)
 
-        mock_redis.get.assert_called_once_with("gdeltcloud:Sudan:2026-04-12:2026-04-25:True")
+        mock_redis.get.assert_called_once_with("gdeltcloud:Sudan:14:True")
 
     async def test_has_fatalities_false_omits_filter_from_params(
         self,
@@ -702,7 +702,7 @@ class TestParameters:
             )
             await connector.fetch_events("Iran", days=7, has_fatalities=False)
 
-        mock_redis.get.assert_called_once_with("gdeltcloud:Iran:2026-04-19:2026-04-25:False")
+        mock_redis.get.assert_called_once_with("gdeltcloud:Iran:7:False")
 
     async def test_date_start_and_date_end_sent_in_params(
         self,

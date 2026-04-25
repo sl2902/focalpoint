@@ -33,6 +33,7 @@ async def _insert(
     db_path: str,
     *,
     region: str = "Gaza",
+    days: int = 1,
     severity: str = "RED",
     summary: str = "Test summary for conflict region.",
     confidence: float = 0.75,
@@ -46,6 +47,7 @@ async def _insert(
     await store.upsert_alert(
         db_path,
         region=region,
+        days=days,
         severity=severity,
         summary=summary,
         source_citations=[_CITATION],
@@ -57,8 +59,8 @@ async def _insert(
         import aiosqlite
         async with aiosqlite.connect(db_path) as db:
             await db.execute(
-                "UPDATE alerts SET created_at = ? WHERE region = ?",
-                (created_at_override, region),
+                "UPDATE alerts SET created_at = ? WHERE region = ? AND days = ?",
+                (created_at_override, region, days),
             )
             await db.commit()
 
@@ -176,6 +178,17 @@ class TestGetCachedAlert:
         assert result is not None
         assert result.source_citations[0].id == "conflict_test_001"
         assert "Armed Clash" in result.source_citations[0].description
+
+    async def test_different_days_cached_independently(self, db_path: str) -> None:
+        """days=1 and days=7 rows must not collide — composite (region, days) PK."""
+        await _insert(db_path, region="Iran", days=1, severity="GREEN")
+        await _insert(db_path, region="Iran", days=7, severity="AMBER")
+        result_1 = await store.get_cached_alert(db_path, "Iran", days=1)
+        result_7 = await store.get_cached_alert(db_path, "Iran", days=7)
+        assert result_1 is not None
+        assert result_7 is not None
+        assert result_1.severity == "GREEN"
+        assert result_7.severity == "AMBER"
 
 
 # ---------------------------------------------------------------------------

@@ -90,14 +90,11 @@ async def get_region_alerts(
     generator: AlertGenerator = Depends(get_alert_generator),
 ) -> AlertResponse:
     """Return the latest severity alert for a named region."""
-    if days == 1:
-        cached = await store.get_cached_alert(db_path, region.title())
-        if cached is not None:
-            logger.info(f"alerts: cache hit for region={region.title()!r} — skipping Gemma 4")
-            return cached
-    else:
-        logger.info(f"alerts: days={days} — bypassing store cache, running live pipeline")
-    logger.info(f"alerts: cache miss for region={region.title()!r} — running live pipeline")
+    cached = await store.get_cached_alert(db_path, region.title(), days=days)
+    if cached is not None:
+        logger.info(f"alerts: cache hit for region={region.title()!r} days={days} — skipping Gemma 4")
+        return cached
+    logger.info(f"alerts: cache miss for region={region.title()!r} days={days} — running live pipeline")
     return await _build_alert(
         region=region,
         days=days,
@@ -155,6 +152,7 @@ async def _build_alert(
         await store.upsert_alert(
             db_path=db_path,
             region=region,
+            days=days,
             severity=response.severity,
             summary=response.summary,
             source_citations=response.source_citations,
@@ -188,6 +186,7 @@ async def _build_alert(
     await store.upsert_alert(
         db_path=db_path,
         region=region,
+        days=days,
         severity=response.severity,
         summary=response.summary,
         source_citations=response.source_citations,

@@ -8,7 +8,7 @@ IMPORTANT — FREE TIER LIMIT: 100 queries/month.
 Cache TTL is set to 28800 s (8 hours) to stay within quota.
 Never reduce this TTL without upgrading the API plan.
 
-Redis key pattern : gdeltcloud:{country}:{days}  TTL: 28800 s
+Redis key pattern : gdeltcloud:{country}:{days}:{has_fatalities}  TTL: 28800 s
 
 Real API response structure (confirmed from live curl):
   {
@@ -296,7 +296,7 @@ class GdeltCloudConnector:
         date_end_str = date_end.strftime("%Y-%m-%d")
         date_start_str = date_start.strftime("%Y-%m-%d")
 
-        cache_key = f"gdeltcloud:{country}:{date_start_str}:{date_end_str}:{has_fatalities}"
+        cache_key = f"gdeltcloud:{country}:{days}:{has_fatalities}"
 
         if self._redis:
             try:
