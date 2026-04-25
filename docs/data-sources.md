@@ -105,7 +105,7 @@ Authorization: Bearer {GDELT_CLOUD_API_KEY}
 **Pydantic model:** `backend/ingestion/gdeltcloud_connector.py` → `GdeltCloudEvent`
 (with nested `GdeltCloudGeo`, `GdeltCloudActor`, `GdeltCloudMetrics`)
 
-**Redis key pattern:** `gdeltcloud:{country}:{date_start}:{date_end}:{has_fatalities}`
+**Redis key pattern:** `gdeltcloud:{country}:{days}:{has_fatalities}`
 **TTL:** 28800 seconds (8 hours — preserves free-tier quota)
 
 ---
