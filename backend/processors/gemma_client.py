@@ -105,7 +105,7 @@ class GemmaClient:
 
     def __init__(self, api_key: str | None = None) -> None:
         key = api_key or settings.GOOGLE_AI_STUDIO_API_KEY
-        self._client = genai.Client(api_key=key, http_options={"timeout": 120})
+        self._client = genai.Client(api_key=key, http_options={"timeout": 120_000})  # milliseconds
 
     def generate_alert(
         self, prompt: str, region: str, use_web_search: bool = False

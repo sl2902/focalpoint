@@ -604,10 +604,10 @@ class TestGemmaClient:
 
     @patch("backend.processors.gemma_client.genai.Client")
     def test_timeout_set_on_client(self, mock_client_cls):
-        """genai.Client must be constructed with http_options timeout=120."""
+        """genai.Client must be constructed with http_options timeout=120_000 (milliseconds)."""
         GemmaClient(api_key="fake-key")
         _, kwargs = mock_client_cls.call_args
-        assert kwargs.get("http_options") == {"timeout": 120}
+        assert kwargs.get("http_options") == {"timeout": 120_000}
 
     @patch("backend.processors.gemma_client.genai.Client")
     def test_remote_protocol_error_retries_once(self, mock_client_cls):
