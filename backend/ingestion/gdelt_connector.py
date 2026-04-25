@@ -148,29 +148,31 @@ class GdeltConnector:
 
         articles: list[GdeltArticle] = []
         aggregate_tone: float = 0.0
-        for attempt in range(_MAX_RETRIES + 1):
-            try:
-                async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
-                    artlist_resp = await client.get(GDELT_BASE_URL, params=artlist_params)
+        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
+            for attempt in range(_MAX_RETRIES + 1):
+                try:
+                    artlist_resp, tone_resp = await asyncio.gather(
+                        client.get(GDELT_BASE_URL, params=artlist_params),
+                        client.get(GDELT_BASE_URL, params=tone_params),
+                    )
                     artlist_resp.raise_for_status()
-                    tone_resp = await client.get(GDELT_BASE_URL, params=tone_params)
                     tone_resp.raise_for_status()
-                articles = GdeltResponse(**artlist_resp.json()).articles
-                aggregate_tone = _parse_aggregate_tone(tone_resp.json())
-                break
-            except Exception as exc:
-                if attempt < _MAX_RETRIES:
-                    logger.warning(
-                        f"GDELT fetch attempt {attempt + 1}/{_MAX_RETRIES + 1} failed: {exc}"
-                        f" — retrying in {_RETRY_DELAY_S}s"
-                    )
-                    await asyncio.sleep(_RETRY_DELAY_S)
-                else:
-                    logger.error(
-                        f"GDELT fetch failed after {_MAX_RETRIES + 1} attempts: {exc}"
-                        " — returning empty response"
-                    )
-                    return GdeltResponse()
+                    articles = GdeltResponse(**artlist_resp.json()).articles
+                    aggregate_tone = _parse_aggregate_tone(tone_resp.json())
+                    break
+                except Exception as exc:
+                    if attempt < _MAX_RETRIES:
+                        logger.warning(
+                            f"GDELT fetch attempt {attempt + 1}/{_MAX_RETRIES + 1} failed: {exc}"
+                            f" — retrying in {_RETRY_DELAY_S}s"
+                        )
+                        await asyncio.sleep(_RETRY_DELAY_S)
+                    else:
+                        logger.error(
+                            f"GDELT fetch failed after {_MAX_RETRIES + 1} attempts: {exc}"
+                            " — returning empty response"
+                        )
+                        return GdeltResponse()
 
         logger.info(
             f"GDELT: fetched {len(articles)} articles"

@@ -661,7 +661,8 @@ class TestRetry:
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
-        """Initial attempt + _MAX_RETRIES retries = _MAX_RETRIES + 1 total GET calls."""
+        """Each attempt fires 2 concurrent GETs (artlist + tone) via asyncio.gather.
+        Total = (_MAX_RETRIES + 1) attempts × 2 calls each."""
         mock_http_client.get.side_effect = httpx.ConnectError("down")
 
         with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
@@ -669,7 +670,7 @@ class TestRetry:
                 connector = GdeltConnector(redis_client=mock_redis)
                 await connector.fetch_articles("conflict Gaza")
 
-        assert mock_http_client.get.call_count == _MAX_RETRIES + 1
+        assert mock_http_client.get.call_count == (_MAX_RETRIES + 1) * 2
 
     async def test_sleep_called_between_retries(
         self,
