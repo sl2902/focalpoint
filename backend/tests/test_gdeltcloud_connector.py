@@ -5,6 +5,7 @@ All external I/O (httpx, Redis) is mocked — no real network calls, no real
 Redis instance required. Tests are grouped by scenario.
 """
 
+import datetime as real_datetime
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -95,6 +96,20 @@ PARSED_EVENT = GdeltCloudEvent(
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+# Frozen date used to make date_start / date_end calculations deterministic.
+_FROZEN_DATE = real_datetime.date(2026, 4, 25)
+
+
+@pytest.fixture
+def frozen_today():
+    """Patch datetime.date.today() in the connector to return _FROZEN_DATE."""
+    mock_dt = MagicMock()
+    mock_dt.date.today.return_value = _FROZEN_DATE
+    mock_dt.timedelta = real_datetime.timedelta
+    with patch("backend.ingestion.gdeltcloud_connector.datetime", mock_dt):
+        yield _FROZEN_DATE
 
 
 @pytest.fixture
@@ -309,10 +324,12 @@ class TestCacheMiss:
 
     async def test_confirmed_query_params_sent(
         self,
+        frozen_today,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
+        # days=3 → date_start = 2026-04-25 - 2 = 2026-04-23, date_end = 2026-04-25
         with patch(
             "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
             return_value=mock_http_client,
@@ -329,12 +346,14 @@ class TestCacheMiss:
         assert params["has_fatalities"] == "true"
         assert params["sort"] == "recent"
         assert params["limit"] == 10
-        # days is used for the cache key only — not forwarded to the API
+        assert params["date_start"] == "2026-04-23"
+        assert params["date_end"] == "2026-04-25"
         assert "days" not in params
         assert "format" not in params
 
     async def test_events_written_to_redis_with_correct_ttl(
         self,
+        frozen_today,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
@@ -348,9 +367,9 @@ class TestCacheMiss:
             )
             events = await connector.fetch_events("Syria", days=1)
 
-        # Verify the key and TTL — payload is validated via round-trip
+        # days=1 → date_start == date_end == today (single day)
         call_args = mock_redis.set.call_args
-        assert call_args[0][0] == "gdeltcloud:Syria:1:True"
+        assert call_args[0][0] == "gdeltcloud:Syria:2026-04-25:2026-04-25:True"
         assert call_args[1]["ex"] == GDELT_CLOUD_CACHE_TTL
         # Payload must be JSON-deserializable back to a list of event dicts
         payload = json.loads(call_args[0][1])
@@ -361,12 +380,14 @@ class TestCacheMiss:
         """8-hour TTL must be enforced to protect the 100 query/month quota."""
         assert GDELT_CLOUD_CACHE_TTL == 28800
 
-    async def test_cache_key_includes_country_and_days(
+    async def test_cache_key_includes_country_and_date_range(
         self,
+        frozen_today,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
+        # days=7 → date_start = 2026-04-25 - 6 = 2026-04-19, date_end = 2026-04-25
         with patch(
             "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
             return_value=mock_http_client,
@@ -376,8 +397,7 @@ class TestCacheMiss:
             )
             await connector.fetch_events("Ukraine", days=7)
 
-        # Redis get must have been called with the correct key
-        mock_redis.get.assert_called_once_with("gdeltcloud:Ukraine:7:True")
+        mock_redis.get.assert_called_once_with("gdeltcloud:Ukraine:2026-04-19:2026-04-25:True")
 
 
 # ---------------------------------------------------------------------------
@@ -623,12 +643,14 @@ class TestParameters:
         _, kwargs = mock_http_client.get.call_args
         assert kwargs["params"]["limit"] == 20
 
-    async def test_custom_days_reflected_in_cache_key(
+    async def test_custom_days_reflected_in_cache_key_as_date_range(
         self,
+        frozen_today,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
+        # days=14 → date_start = 2026-04-25 - 13 = 2026-04-12, date_end = 2026-04-25
         with patch(
             "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
             return_value=mock_http_client,
@@ -638,7 +660,7 @@ class TestParameters:
             )
             await connector.fetch_events("Sudan", days=14)
 
-        mock_redis.get.assert_called_once_with("gdeltcloud:Sudan:14:True")
+        mock_redis.get.assert_called_once_with("gdeltcloud:Sudan:2026-04-12:2026-04-25:True")
 
     async def test_has_fatalities_false_omits_filter_from_params(
         self,
@@ -664,11 +686,13 @@ class TestParameters:
 
     async def test_has_fatalities_false_uses_distinct_cache_key(
         self,
+        frozen_today,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
         """Cache keys for has_fatalities=True and False must not collide."""
+        # days=7 → date_start = 2026-04-19, date_end = 2026-04-25
         with patch(
             "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
             return_value=mock_http_client,
@@ -678,17 +702,18 @@ class TestParameters:
             )
             await connector.fetch_events("Iran", days=7, has_fatalities=False)
 
-        mock_redis.get.assert_called_once_with("gdeltcloud:Iran:7:False")
+        mock_redis.get.assert_called_once_with("gdeltcloud:Iran:2026-04-19:2026-04-25:False")
 
-    async def test_iran_days_7_not_forwarded_to_api(
+    async def test_date_start_and_date_end_sent_in_params(
         self,
+        frozen_today,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
-        """days is a cache-key discriminator only — the GDELT Cloud API does
-        not accept a date-window parameter. Increasing days from 1 to 7 changes
-        the cache key but does not change what the API returns."""
+        """date_start and date_end are sent to the API; the raw 'days' integer
+        is never forwarded. days=7 → 7-day inclusive window ending today."""
+        # days=7 → date_start = 2026-04-25 - 6 = 2026-04-19, date_end = 2026-04-25
         with patch(
             "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
             return_value=mock_http_client,
@@ -699,4 +724,29 @@ class TestParameters:
             await connector.fetch_events("Iran", days=7)
 
         _, kwargs = mock_http_client.get.call_args
-        assert "days" not in kwargs["params"]
+        params = kwargs["params"]
+        assert params["date_start"] == "2026-04-19"
+        assert params["date_end"] == "2026-04-25"
+        assert "days" not in params
+
+    async def test_days_one_gives_single_day_window(
+        self,
+        frozen_today,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        """days=1 must produce date_start == date_end == today (today only)."""
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            await connector.fetch_events("Yemen", days=1)
+
+        _, kwargs = mock_http_client.get.call_args
+        params = kwargs["params"]
+        assert params["date_start"] == "2026-04-25"
+        assert params["date_end"] == "2026-04-25"

@@ -32,13 +32,20 @@ actor and event-type fields that feed directly into severity scoring.
 **Query parameters sent by FocalPoint:**
 - `country` — country name (e.g. `Palestine`)
 - `event_family=conflict`
-- `has_fatalities=true` — filter to events with confirmed casualties
+- `date_start` — start of query window, formatted `YYYY-MM-DD` (today − (days − 1))
+- `date_end` — end of query window, formatted `YYYY-MM-DD` (today)
+- `has_fatalities=true` — filter to events with confirmed casualties (omitted for some countries)
 - `sort=recent`
 - `limit` — 20 for backend, 10 for on-device
 
-Note: `has_fatalities=true` can return 0 results for some countries/periods.
-Remove the filter if needed and rely on the `fatalities` field being `null`
-rather than absent.
+The date window is required — without `date_start` / `date_end` the API returns 0
+results regardless of country. The `days` parameter in `fetch_events()` controls
+the window width; `days=1` queries today only, `days=7` queries the last 7 days.
+
+Note: `has_fatalities=true` can return 0 results for some countries (Iran, Sudan,
+Myanmar, Yemen, Syria). These countries are listed in `NO_FATALITIES_FILTER_COUNTRIES`
+in `config.py` — the filter is omitted for them and the `fatalities` field on each
+event may be `null` rather than absent.
 
 **Real API response structure (confirmed from live curl):**
 ```json
@@ -84,10 +91,12 @@ rather than absent.
 - `metrics.confidence` — confidence score (not top-level)
 - `metrics.goldstein_scale` — conflict intensity -10 to +10
 
-**Example query (recent conflict events for Palestine):**
+**Example query (recent conflict events for Palestine, last 7 days):**
 ```
 GET https://gdeltcloud.com/api/v2/events
-    ?country=Palestine&event_family=conflict&sort=recent&limit=20
+    ?country=Palestine&event_family=conflict
+    &date_start=2026-04-19&date_end=2026-04-25
+    &has_fatalities=true&sort=recent&limit=20
 Authorization: Bearer {GDELT_CLOUD_API_KEY}
 ```
 
@@ -96,7 +105,7 @@ Authorization: Bearer {GDELT_CLOUD_API_KEY}
 **Pydantic model:** `backend/ingestion/gdeltcloud_connector.py` → `GdeltCloudEvent`
 (with nested `GdeltCloudGeo`, `GdeltCloudActor`, `GdeltCloudMetrics`)
 
-**Redis key pattern:** `gdeltcloud:{country}:{days}`
+**Redis key pattern:** `gdeltcloud:{country}:{date_start}:{date_end}:{has_fatalities}`
 **TTL:** 28800 seconds (8 hours — preserves free-tier quota)
 
 ---

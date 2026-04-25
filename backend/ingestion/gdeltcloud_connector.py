@@ -45,6 +45,7 @@ Real API response structure (confirmed from live curl):
 
 from __future__ import annotations
 
+import datetime
 import json
 from typing import Any
 
@@ -281,14 +282,21 @@ class GdeltCloudConnector:
 
         Args:
             country:        Country name recognised by the GDELT Cloud API.
-            days:           Used as cache key discriminator only — not sent to API.
+            days:           Number of calendar days to query (inclusive window ending
+                            today). `days=1` queries today only; `days=7` queries the
+                            last 7 days. Sent to the API as `date_start` / `date_end`.
             limit:          Max events to return (default 20).
             has_fatalities: When True (default) filters to confirmed-fatality events only.
                             Set False for countries where this filter returns 0 results —
                             the fatalities field will be None rather than absent.
                             See docs/data-sources.md — GDELT Cloud section.
         """
-        cache_key = f"gdeltcloud:{country}:{days}:{has_fatalities}"
+        date_end = datetime.date.today()
+        date_start = date_end - datetime.timedelta(days=days - 1)
+        date_end_str = date_end.strftime("%Y-%m-%d")
+        date_start_str = date_start.strftime("%Y-%m-%d")
+
+        cache_key = f"gdeltcloud:{country}:{date_start_str}:{date_end_str}:{has_fatalities}"
 
         if self._redis:
             try:
@@ -302,6 +310,8 @@ class GdeltCloudConnector:
         params: dict[str, Any] = {
             "country": country,
             "event_family": "conflict",
+            "date_start": date_start_str,
+            "date_end": date_end_str,
             "sort": "recent",
             "limit": limit,
         }
@@ -321,7 +331,7 @@ class GdeltCloudConnector:
 
         logger.info(
             f"GDELT Cloud: fetched {len(events)} events"
-            f" for {country!r}, days={days}"
+            f" for {country!r}, {date_start_str} → {date_end_str}"
             f" — quota reminder: 100 queries/month free tier"
         )
 
