@@ -48,6 +48,11 @@ class QueryResponse(BaseModel):
     was_sanitised: bool
 
 
+class TranscribeResponse(BaseModel):
+    text: str
+    language: str
+
+
 class HealthResponse(BaseModel):
     status: str
     version: str

@@ -646,6 +646,99 @@ class TestGemmaClient:
         assert result.source_citations[0].id == "FALLBACK:api-error"
         assert mock_client.models.generate_content.call_count == 2
 
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_generate_alert_multimodal_builds_content_list(self, mock_client_cls):
+        """When audio_bytes provided, contents must be a list [audio Part, text Part]."""
+        from google.genai import types as genai_types
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(_valid_alert_dict())
+
+        audio_bytes = b"fake-audio"
+        client = GemmaClient(api_key="fake-key")
+        result = client.generate_alert(
+            "prompt text",
+            _REGION,
+            audio_bytes=audio_bytes,
+            audio_mime_type="audio/wav",
+        )
+
+        assert result.severity == "RED"
+        call_kwargs = mock_client.models.generate_content.call_args[1]
+        contents = call_kwargs.get("contents") or mock_client.models.generate_content.call_args[0][1]
+        assert isinstance(contents, list)
+        assert len(contents) == 2
+        # First element is the audio Part
+        audio_part = contents[0]
+        assert isinstance(audio_part, genai_types.Part)
+        assert audio_part.inline_data.mime_type == "audio/wav"
+        assert audio_part.inline_data.data == audio_bytes
+        # Second element is the text Part
+        text_part = contents[1]
+        assert isinstance(text_part, genai_types.Part)
+        assert text_part.text == "prompt text"
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_generate_alert_text_only_contents_is_string(self, mock_client_cls):
+        """Without audio, contents passed to the SDK must remain a plain string."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(_valid_alert_dict())
+
+        client = GemmaClient(api_key="fake-key")
+        client.generate_alert("text prompt", _REGION)
+
+        call_args = mock_client.models.generate_content.call_args
+        contents = call_args[1].get("contents") or call_args[0][1]
+        assert contents == "text prompt"
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_transcribe_audio_returns_transcript(self, mock_client_cls):
+        """transcribe_audio must return the model's text response."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = "  Is it safe to travel north?  "
+        mock_client.models.generate_content.return_value = mock_response
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.transcribe_audio(b"fake-audio", "audio/wav", language="en")
+
+        assert result == "Is it safe to travel north?"
+        call_kwargs = mock_client.models.generate_content.call_args[1]
+        contents = call_kwargs.get("contents") or mock_client.models.generate_content.call_args[0][1]
+        assert isinstance(contents, list)
+        # Audio Part first, then text instruction
+        assert contents[0].inline_data.data == b"fake-audio"
+        assert "en" in contents[1].text
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_transcribe_audio_returns_empty_string_on_error(self, mock_client_cls):
+        """transcribe_audio must return '' on any API failure — never raises."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.side_effect = RuntimeError("API down")
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.transcribe_audio(b"fake-audio", "audio/wav")
+
+        assert result == ""
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_transcribe_audio_returns_empty_string_on_empty_response(self, mock_client_cls):
+        """transcribe_audio must return '' when the model response text is empty."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.text = ""
+        mock_client.models.generate_content.return_value = mock_response
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.transcribe_audio(b"fake-audio", "audio/wav")
+
+        assert result == ""
+
 
 # ---------------------------------------------------------------------------
 # AlertGenerator tests

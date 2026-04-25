@@ -84,6 +84,12 @@ _WEB_SEARCH_GENERATION_CONFIG = genai_types.GenerateContentConfig(
     tools=[{"google_search": {}}],
 )
 
+# Transcription config: plain text response, no JSON schema.
+_TRANSCRIBE_CONFIG = genai_types.GenerateContentConfig(
+    temperature=0.0,
+    max_output_tokens=512,
+)
+
 
 def _extract_json(raw_text: str) -> dict:
     """
@@ -108,7 +114,12 @@ class GemmaClient:
         self._client = genai.Client(api_key=key, http_options={"timeout": 120_000})  # milliseconds
 
     def generate_alert(
-        self, prompt: str, region: str, use_web_search: bool = False
+        self,
+        prompt: str,
+        region: str,
+        use_web_search: bool = False,
+        audio_bytes: bytes | None = None,
+        audio_mime_type: str | None = None,
     ) -> AlertOutput:
         """
         Send *prompt* to Gemma 4 26B and return a validated AlertOutput.
@@ -118,20 +129,35 @@ class GemmaClient:
         fallback so the caller always receives a well-formed AlertOutput.
 
         Args:
-            prompt:         Fully assembled prompt from prompt_builder.build_prompt.
-            region:         Region label threaded into the fallback AlertOutput.
-            use_web_search: When True, enables the Google Search grounding tool so
-                            the model can fetch live sources when GDELT Doc API has
-                            no usable articles.
+            prompt:          Fully assembled prompt from prompt_builder.build_prompt.
+            region:          Region label threaded into the fallback AlertOutput.
+            use_web_search:  When True, enables the Google Search grounding tool so
+                             the model can fetch live sources when GDELT Doc API has
+                             no usable articles.
+            audio_bytes:     Raw audio bytes for multimodal input. When provided,
+                             Gemma receives both the audio and the text prompt.
+            audio_mime_type: MIME type of the audio (e.g. "audio/wav", "audio/mp4").
 
         Returns:
             Validated AlertOutput. Never raises.
         """
         config = _WEB_SEARCH_GENERATION_CONFIG if use_web_search else _GENERATION_CONFIG
+
+        # Build contents — multimodal list when audio provided, plain string otherwise.
+        if audio_bytes and audio_mime_type:
+            contents: list | str = [
+                genai_types.Part(
+                    inline_data=genai_types.Blob(data=audio_bytes, mime_type=audio_mime_type)
+                ),
+                genai_types.Part(text=prompt),
+            ]
+        else:
+            contents = prompt
+
         try:
             response = self._client.models.generate_content(
                 model=_BACKEND_MODEL,
-                contents=prompt,
+                contents=contents,
                 config=config,
             )
         except httpx.RemoteProtocolError as exc:
@@ -141,7 +167,7 @@ class GemmaClient:
             try:
                 response = self._client.models.generate_content(
                     model=_BACKEND_MODEL,
-                    contents=prompt,
+                    contents=contents,
                     config=config,
                 )
             except Exception as exc2:
@@ -182,7 +208,7 @@ class GemmaClient:
             try:
                 retry_response = self._client.models.generate_content(
                     model=_BACKEND_MODEL,
-                    contents=prompt,
+                    contents=contents,
                     config=config,
                 )
                 retry_text = retry_response.text
@@ -195,6 +221,51 @@ class GemmaClient:
                 )
 
         return result
+
+    def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        mime_type: str,
+        language: str = "en",
+    ) -> str:
+        """
+        Transcribe audio using Gemma 4 and return the transcript as plain text.
+
+        Args:
+            audio_bytes: Raw audio bytes.
+            mime_type:   MIME type of the audio (e.g. "audio/wav", "audio/mp4").
+            language:    BCP-47 language hint (e.g. "en", "fr", "ar").
+
+        Returns:
+            Transcribed text, or empty string on any failure. Never raises.
+        """
+        prompt = (
+            f"Transcribe the following audio recording exactly as spoken. "
+            f"The expected language is '{language}'. "
+            "Return only the transcribed text with no additional commentary, "
+            "labels, or formatting."
+        )
+        contents = [
+            genai_types.Part(
+                inline_data=genai_types.Blob(data=audio_bytes, mime_type=mime_type)
+            ),
+            genai_types.Part(text=prompt),
+        ]
+        try:
+            response = self._client.models.generate_content(
+                model=_BACKEND_MODEL,
+                contents=contents,
+                config=_TRANSCRIBE_CONFIG,
+            )
+            text = (response.text or "").strip()
+            if not text:
+                logger.warning("gemma_client: transcribe_audio returned empty response")
+            return text
+        except Exception as exc:
+            logger.warning(
+                f"gemma_client: transcribe_audio failed — {type(exc).__name__}: {exc}"
+            )
+            return ""
 
 
 def _fallback(region: str) -> AlertOutput:

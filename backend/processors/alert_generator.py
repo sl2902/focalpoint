@@ -109,6 +109,8 @@ class AlertGenerator:
         region: str,
         journalist_query: str = "",
         severity_result: SeverityResult | None = None,
+        audio_bytes: bytes | None = None,
+        audio_mime_type: str | None = None,
     ) -> AlertOutput:
         """
         Generate a validated alert for *region* from multi-source inputs.
@@ -130,11 +132,15 @@ class AlertGenerator:
             severity_result:      Optional SeverityResult from score_severity.
                                   When provided the maximum severity rule is applied:
                                   final severity = max(gemma, scorer).
+            audio_bytes:          Optional raw audio bytes for multimodal input. When
+                                  provided, Gemma receives audio + text prompt together.
+            audio_mime_type:      MIME type of the audio (e.g. "audio/wav", "audio/mp4").
 
         Returns:
             Validated AlertOutput. Always returns — never raises.
         """
         use_web_search = len(gdelt_articles) == 0
+        audio_provided = audio_bytes is not None
 
         if journalist_query:
             sanitised = sanitise_query(journalist_query).text
@@ -150,9 +156,16 @@ class AlertGenerator:
             region=region,
             sanitised_query=sanitised,
             use_web_search=use_web_search,
+            audio_provided=audio_provided,
         )
 
-        alert = self._gemma.generate_alert(prompt, region, use_web_search=use_web_search)
+        alert = self._gemma.generate_alert(
+            prompt,
+            region,
+            use_web_search=use_web_search,
+            audio_bytes=audio_bytes,
+            audio_mime_type=audio_mime_type,
+        )
 
         if severity_result is not None:
             # When web search was active, suppress the scorer's INSUFFICIENT_DATA veto.
@@ -161,3 +174,12 @@ class AlertGenerator:
                 alert = _apply_max_severity(alert, severity_result)
 
         return alert
+
+    def transcribe(
+        self,
+        audio_bytes: bytes,
+        mime_type: str,
+        language: str = "en",
+    ) -> str:
+        """Transcribe audio bytes to text via Gemma 4. Returns empty string on failure."""
+        return self._gemma.transcribe_audio(audio_bytes, mime_type, language)

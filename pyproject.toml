@@ -16,6 +16,7 @@ dependencies = [
     "aiofiles",
     "aiosqlite>=0.22.1",
     "apscheduler>=3.10,<4",
+    "python-multipart>=0.0.26",
 ]
 
 [dependency-groups]
