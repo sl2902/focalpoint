@@ -214,6 +214,23 @@ class TestGetRegionAlerts:
         resp = client.get("/alerts/Gaza?days=31")
         assert resp.status_code == 422
 
+    def test_days_gt_1_bypasses_store_cache(self, client: TestClient) -> None:
+        """days > 1 must never be served from the store cache — generator is
+        always called regardless of whether a cached result exists for the region."""
+        mock_gen = MagicMock()
+        mock_gen.generate = MagicMock(return_value=_ALERT_OUTPUT)
+        app.dependency_overrides[get_alert_generator] = lambda: mock_gen
+
+        # Warm the store cache with a days=1 request.
+        client.get("/alerts/Gaza?days=1")
+        first_call_count = mock_gen.generate.call_count
+
+        # days=25 must bypass the cached result and call generator again.
+        client.get("/alerts/Gaza?days=25")
+        assert mock_gen.generate.call_count == first_call_count + 1
+
+        app.dependency_overrides[get_alert_generator] = _mock_generator
+
     def test_insufficient_data_when_no_events(self, client: TestClient) -> None:
         """With empty articles the short-circuit no longer fires — generator is called
         and returns RED (from the mock). Scorer reaches INSUFFICIENT_DATA (zero signal)
