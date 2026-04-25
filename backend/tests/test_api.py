@@ -214,6 +214,28 @@ class TestGetRegionAlerts:
         resp = client.get("/alerts/Gaza?days=31")
         assert resp.status_code == 422
 
+    @pytest.mark.parametrize("days,expected_timespan", [
+        (1, "24H"),
+        (7, "7D"),
+        (30, "30D"),
+    ])
+    def test_gdelt_fetch_articles_timespan_matches_days(
+        self, tmp_db_path: str, days: int, expected_timespan: str
+    ) -> None:
+        """fetch_articles timespan must match the days param — 24H for days=1, {n}D otherwise."""
+        mock_gdelt = _mock_gdelt()
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
+        app.dependency_overrides[get_gdelt_connector] = lambda: mock_gdelt
+        app.dependency_overrides[get_cpj_connector] = _mock_cpj
+        app.dependency_overrides[get_alert_generator] = _mock_generator
+        with TestClient(app) as c:
+            c.get(f"/alerts/Gaza?days={days}")
+        app.dependency_overrides.clear()
+        mock_gdelt.fetch_articles.assert_called_once()
+        _, kwargs = mock_gdelt.fetch_articles.call_args
+        assert kwargs.get("timespan") == expected_timespan
+
     def test_different_days_cached_independently(self, client: TestClient) -> None:
         """days=1 and days=25 use separate cache entries — each triggers the generator
         on first call, then hits cache on the second call with the same days value."""

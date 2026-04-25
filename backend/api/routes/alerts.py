@@ -122,7 +122,8 @@ async def _build_alert(
     events = await gdelt_cloud.fetch_events(
         gdelt_cloud_country, days=days, has_fatalities=has_fatalities
     )
-    gdelt_resp = await gdelt.fetch_articles(f"conflict {region}")
+    timespan = "24H" if days == 1 else f"{days}D"
+    gdelt_resp = await gdelt.fetch_articles(f"conflict {region}", timespan=timespan)
     cpj_stats = cpj.get_country_stats(region)
     rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
