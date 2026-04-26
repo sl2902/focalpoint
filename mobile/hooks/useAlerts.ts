@@ -1,119 +1,94 @@
 /**
- * Progressive alert loader — fetches each watch zone independently.
+ * Feed data hook.
  *
- * For each region:
- *   1. Immediately seeds from local SQLite cache (instant render).
- *   2. Fires a live fetch against GET /alerts/{region}?days=N.
- *   3. Updates the entry when the live result resolves.
+ * Network policy (one call only):
+ *   On first mount (app launch), fires GET /alerts/feed once to seed
+ *   local SQLite from the backend cache. All subsequent reads are local.
  *
- * Re-runs whenever `days` changes or `refresh()` is called.
+ * Days change / pull-to-refresh / new data arrival:
+ *   All re-read local SQLite via a single effect that depends on both
+ *   `days` and `version`. The initial fetch only bumps `version` after
+ *   writing to SQLite — it never calls setAlerts directly, avoiding the
+ *   stale-closure bug where a days=7 capture would overwrite a days=30
+ *   display after Zustand hydration restored the persisted value.
  */
 
-import { useState, useEffect, useCallback } from 'react';
-import { fetchAlertForRegion } from '../services/alerts';
-import { getAlertByRegion, upsertAlert } from '../services/cache';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { fetchFeed } from '../services/alerts';
+import { getLatestAlertsByDays, upsertAlert } from '../services/cache';
 import { useConnectivity } from './useConnectivity';
 import { useSettingsStore } from '../store/useSettingsStore';
 import type { DaysOption } from '../store/useSettingsStore';
 import type { AlertResponse } from '../types/api';
-import { WATCH_ZONES } from '../constants/watchZones';
-
-export type EntryStatus = 'loading' | 'done' | 'error';
-
-export interface RegionEntry {
-  region: string;
-  alert: AlertResponse | null;
-  status: EntryStatus;
-}
 
 interface UseAlertsResult {
-  entries: RegionEntry[];
+  alerts: AlertResponse[];
   days: DaysOption;
   setDays: (d: DaysOption) => Promise<void>;
   refresh: () => void;
   refreshing: boolean;
 }
 
-const INITIAL_ENTRIES: RegionEntry[] = WATCH_ZONES.map((region) => ({
-  region,
-  alert: null,
-  status: 'loading',
-}));
-
 export function useAlerts(): UseAlertsResult {
   const { isConnected } = useConnectivity();
   const days = useSettingsStore((s) => s.days);
   const setDays = useSettingsStore((s) => s.setDays);
 
-  const [entries, setEntries] = useState<RegionEntry[]>(INITIAL_ENTRIES);
-  const [version, setVersion] = useState(0);
+  const [alerts, setAlerts] = useState<AlertResponse[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  // Bumped after SQLite is written so the read effect re-fires with the
+  // current days value rather than a stale closure value.
+  const [version, setVersion] = useState(0);
+  const didInitialFetch = useRef(false);
 
-  const refresh = useCallback(() => {
-    setRefreshing(true);
-    setVersion((v) => v + 1);
-  }, []);
+  // One-time app-launch fetch: seed local SQLite from backend cache.
+  // Does NOT call setAlerts — only writes SQLite and bumps version so
+  // the read effect below picks up the data with the live `days` value.
+  useEffect(() => {
+    if (didInitialFetch.current || !isConnected) return;
+    didInitialFetch.current = true;
 
-  function updateEntry(region: string, patch: Partial<RegionEntry>) {
-    setEntries((prev) =>
-      prev.map((e) => (e.region === region ? { ...e, ...patch } : e))
-    );
-  }
+    fetchFeed()
+      .then(async (feed) => {
+        await Promise.all(feed.map((a) => upsertAlert(a, a.days ?? 7)));
+        setVersion((v) => v + 1);
+      })
+      .catch(() => {
+        // Network unavailable — existing SQLite data stays visible.
+      });
+  }, [isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Single source of truth for setAlerts: re-reads SQLite whenever
+  // days changes, new data arrives (version bump), or pull-to-refresh.
   useEffect(() => {
     let cancelled = false;
-    const pending = { count: WATCH_ZONES.length };
-
-    function onZoneDone() {
-      pending.count -= 1;
-      if (pending.count === 0 && !cancelled) {
-        setRefreshing(false);
-      }
-    }
-
-    // Reset all to loading (preserve any existing alert for instant display).
-    setEntries((prev) =>
-      prev.map((e) => ({ ...e, status: 'loading' as EntryStatus }))
-    );
-
-    WATCH_ZONES.forEach(async (zone) => {
-      // Step 1 — seed from local cache for instant render.
-      const cached = await getAlertByRegion(zone);
-      if (cached && !cancelled) {
-        updateEntry(zone, { alert: cached, status: 'loading' });
-      }
-
-      if (!isConnected) {
-        // Offline — cache is the final answer.
-        if (!cancelled) {
-          updateEntry(zone, {
-            alert: cached ?? null,
-            status: cached ? 'done' : 'error',
-          });
-        }
-        onZoneDone();
-        return;
-      }
-
-      // Step 2 — fetch live from backend.
-      try {
-        const fresh = await fetchAlertForRegion(zone, days);
-        if (cancelled) return;
-        await upsertAlert(fresh);
-        updateEntry(zone, { alert: fresh, status: 'done' });
-      } catch {
-        if (cancelled) return;
-        // Keep cached alert visible if we have one; mark error only if empty.
-        updateEntry(zone, { status: cached ? 'done' : 'error' });
-      } finally {
-        onZoneDone();
-      }
+    getLatestAlertsByDays(days).then((cached) => {
+      if (!cancelled) setAlerts(cached);
     });
-
     return () => {
       cancelled = true;
     };
-  }, [days, isConnected, version]);
+  }, [days, version]);
 
-  return { entries, days, setDays, refresh, refreshing };
+  // Re-read SQLite whenever the feed screen regains focus — catches writes
+  // made by the Alert Detail refresh button while the screen was in the background.
+  useFocusEffect(
+    useCallback(() => {
+      setVersion((v) => v + 1);
+    }, []),
+  );
+
+  // Pull-to-refresh: bump version to re-read SQLite. No network call.
+  const refresh = useCallback(() => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setVersion((v) => v + 1);
+    // setRefreshing(false) after the SQLite read completes.
+    // We approximate this with a short timeout since the read effect
+    // runs asynchronously and has no callback channel back here.
+    setTimeout(() => setRefreshing(false), 300);
+  }, [refreshing]);
+
+  return { alerts, days, setDays, refresh, refreshing };
 }

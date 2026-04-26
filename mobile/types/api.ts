@@ -20,6 +20,7 @@ export interface AlertResponse {
   region: string;
   timestamp: string;   // ISO 8601
   confidence: number;  // 0.0–1.0
+  days?: number;       // populated by /alerts/feed; absent on per-region responses
 }
 
 export interface MapMarker {

@@ -1,21 +1,23 @@
 /**
- * Alert Detail screen (modal).
+ * Alert Detail screen.
  *
  * Route params: { id: string, data: string (JSON-serialised AlertResponse) }
- * The full alert is passed as a serialised JSON param from the feed —
- * no cache lookup required.
  *
- * Displays:
- * - Severity badge
- * - Summary
- * - Confidence bar
- * - FloorWarning (if floor_applied detected in summary)
- * - ElevationNote (if elevation note detected in summary)
- * - Source citations
+ * The initial alert is passed as a serialised param from the feed.
+ * The Refresh button triggers a live backend call for this region only —
+ * the only path that may invoke Gemma 4. On success the local SQLite
+ * cache is updated and the screen reflects the new result.
  */
 
 import React, { useEffect, useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  ScrollView,
+  StyleSheet,
+  ActivityIndicator,
+  Pressable,
+} from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { SeverityBadge } from '../../components/SeverityBadge';
@@ -24,41 +26,50 @@ import { CitationList } from '../../components/CitationList';
 import { FloorWarning } from '../../components/FloorWarning';
 import { ElevationNote } from '../../components/ElevationNote';
 import { CachedBanner } from '../../components/CachedBanner';
+import { fetchAlertForRegion } from '../../services/alerts';
+import { upsertAlert } from '../../services/cache';
+import { useSettingsStore } from '../../store/useSettingsStore';
 import type { AlertResponse } from '../../types/api';
 
-// Detect elevation note appended by alert_generator.py
 const ELEVATION_PATTERN = /\[Elevation note:[^\]]+\]/i;
-// Detect floor applied note
 const FLOOR_PATTERN = /\[Historical risk floor applied[^\]]*\]/i;
 
 export default function AlertDetailScreen() {
   const { data } = useLocalSearchParams<{ id: string; data: string }>();
+  const days = useSettingsStore((s) => s.days);
 
   const [alert, setAlert] = useState<AlertResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState(false);
 
   useEffect(() => {
-    if (!data) { setLoading(false); return; }
+    if (!data) return;
     try {
       setAlert(JSON.parse(data) as AlertResponse);
     } catch {
       // leave alert null — "not found" UI handles it
     }
-    setLoading(false);
   }, [data]);
 
-  if (loading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#2563eb" />
-      </View>
-    );
+  async function handleRefresh() {
+    if (!alert || refreshing) return;
+    setRefreshing(true);
+    setRefreshError(false);
+    try {
+      const fresh = await fetchAlertForRegion(alert.region, days);
+      await upsertAlert(fresh, days);
+      setAlert(fresh);
+    } catch {
+      setRefreshError(true);
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   if (!alert) {
     return (
       <View style={styles.center}>
-        <Text style={styles.notFound}>Alert not found in cache.</Text>
+        <Text style={styles.notFound}>Alert not found.</Text>
       </View>
     );
   }
@@ -98,6 +109,27 @@ export default function AlertDetailScreen() {
         <Text style={styles.summary}>{cleanSummary}</Text>
 
         <CitationList citations={alert.source_citations} />
+
+        {/* Refresh button — triggers a live Gemma 4 assessment for this region */}
+        <Pressable
+          style={[styles.refreshBtn, refreshing && styles.refreshBtnDisabled]}
+          onPress={handleRefresh}
+          disabled={refreshing}
+        >
+          {refreshing ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Text style={styles.refreshBtnText}>
+              Refresh {alert.region} ({days}d)
+            </Text>
+          )}
+        </Pressable>
+
+        {refreshError && (
+          <Text style={styles.refreshError}>
+            Could not reach the server. Try again when connected.
+          </Text>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -107,7 +139,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   notFound: { fontSize: 15, color: '#9ca3af' },
-  scroll: { padding: 16 },
+  scroll: { padding: 16, paddingBottom: 32 },
+
   regionRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -121,5 +154,22 @@ const styles = StyleSheet.create({
     color: '#111827',
     lineHeight: 23,
     marginTop: 14,
+  },
+
+  refreshBtn: {
+    marginTop: 28,
+    backgroundColor: '#1d4ed8',
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  refreshBtnDisabled: { backgroundColor: '#93c5fd' },
+  refreshBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+
+  refreshError: {
+    marginTop: 10,
+    fontSize: 13,
+    color: '#ef4444',
+    textAlign: 'center',
   },
 });

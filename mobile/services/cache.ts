@@ -3,22 +3,18 @@ import * as SQLite from 'expo-sqlite';
 import type { AlertResponse } from '../types/api';
 
 const MAX_PER_REGION = 100;
-const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
 
-// ── Web: in-memory store ────────────────────────────────────────────────────
+const SEVERITY_ORDER = ['CRITICAL', 'RED', 'AMBER', 'GREEN', 'INSUFFICIENT_DATA'];
 
-type MemRow = { data: AlertResponse; fetchedAt: number };
-const mem: Record<string, MemRow[]> = {};
-
-function memUpsert(alert: AlertResponse): void {
-  const rows = mem[alert.region] ?? [];
-  rows.unshift({ data: alert, fetchedAt: Date.now() });
-  mem[alert.region] = rows.slice(0, MAX_PER_REGION);
+function sortBySeverity(alerts: AlertResponse[]): AlertResponse[] {
+  return [...alerts].sort(
+    (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
+  );
 }
 
-function memNewest(region: string): MemRow | undefined {
-  return mem[region]?.[0];
-}
+// ── Web: in-memory keyed by "region:days" ───────────────────────────────────
+
+const mem: Record<string, AlertResponse> = {};
 
 // ── Native: SQLite ──────────────────────────────────────────────────────────
 
@@ -32,49 +28,96 @@ async function getDb(): Promise<SQLite.SQLiteDatabase> {
     CREATE TABLE IF NOT EXISTS alerts (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       region     TEXT    NOT NULL,
+      days       INTEGER NOT NULL DEFAULT 7,
       data       TEXT    NOT NULL,
       fetched_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_alerts_region ON alerts(region);
+    CREATE INDEX IF NOT EXISTS idx_alerts_region_days ON alerts(region, days);
   `);
+  // Migrate existing tables that predate the days column.
+  try {
+    await _db.execAsync('ALTER TABLE alerts ADD COLUMN days INTEGER NOT NULL DEFAULT 7');
+  } catch {
+    // Column already exists — safe to ignore.
+  }
   return _db;
 }
 
 // ── Exported API ────────────────────────────────────────────────────────────
 
-export async function upsertAlert(alert: AlertResponse): Promise<void> {
+const FALLBACK_MARKERS = [
+  'Gemma 4 API call failed',
+  'Output validation failed',
+];
+
+function isFallback(summary: string): boolean {
+  return FALLBACK_MARKERS.some((m) => summary.includes(m));
+}
+
+export async function upsertAlert(alert: AlertResponse, days: number): Promise<void> {
   if (Platform.OS === 'web') {
-    memUpsert(alert);
+    mem[`${alert.region}:${days}`] = alert;
     return;
   }
   const db = await getDb();
   const now = Date.now();
   await db.runAsync(
-    'INSERT INTO alerts (region, data, fetched_at) VALUES (?, ?, ?)',
+    'INSERT INTO alerts (region, days, data, fetched_at) VALUES (?, ?, ?, ?)',
     alert.region,
+    days,
     JSON.stringify(alert),
     now,
   );
+  // Keep at most MAX_PER_REGION rows per (region, days).
   await db.runAsync(
     `DELETE FROM alerts
-     WHERE region = ?
+     WHERE region = ? AND days = ?
        AND id NOT IN (
-         SELECT id FROM alerts
-         WHERE region = ?
-         ORDER BY fetched_at DESC
-         LIMIT ?
+         SELECT id FROM alerts WHERE region = ? AND days = ?
+         ORDER BY fetched_at DESC LIMIT ?
        )`,
-    alert.region,
-    alert.region,
+    alert.region, days,
+    alert.region, days,
     MAX_PER_REGION,
   );
 }
 
-export async function getAlertByRegion(
-  region: string,
-): Promise<AlertResponse | null> {
+/** Latest non-fallback alert per region for the given days window, sorted by severity. */
+export async function getLatestAlertsByDays(days: number): Promise<AlertResponse[]> {
   if (Platform.OS === 'web') {
-    return memNewest(region)?.data ?? null;
+    const suffix = `:${days}`;
+    const alerts = Object.entries(mem)
+      .filter(([k]) => k.endsWith(suffix))
+      .map(([, v]) => v)
+      .filter((a) => !isFallback(a.summary));
+    return sortBySeverity(alerts);
+  }
+  const db = await getDb();
+  // Rows ordered newest-first. Deduplicate per region, skipping fallback
+  // rows WITHOUT marking the region as seen so that an older valid row
+  // for the same region can still surface.
+  const rows = await db.getAllAsync<{ region: string; data: string }>(
+    'SELECT region, data FROM alerts WHERE days = ? ORDER BY fetched_at DESC',
+    days,
+  );
+  const seen = new Set<string>();
+  const latest: AlertResponse[] = [];
+  for (const row of rows) {
+    if (seen.has(row.region)) continue;
+    const alert = JSON.parse(row.data) as AlertResponse;
+    if (isFallback(alert.summary)) continue; // skip — don't mark seen
+    seen.add(row.region);
+    latest.push(alert);
+  }
+  return sortBySeverity(latest);
+}
+
+/** Most recent alert for a region across any days window — used by Alert Detail. */
+export async function getAlertByRegion(region: string): Promise<AlertResponse | null> {
+  if (Platform.OS === 'web') {
+    const entry = Object.entries(mem).find(([k]) => k.startsWith(`${region}:`));
+    return entry ? entry[1] : null;
   }
   const db = await getDb();
   const row = await db.getFirstAsync<{ data: string }>(
@@ -82,37 +125,4 @@ export async function getAlertByRegion(
     region,
   );
   return row ? (JSON.parse(row.data) as AlertResponse) : null;
-}
-
-export async function getAlertsForRegion(
-  region: string,
-): Promise<AlertResponse[]> {
-  if (Platform.OS === 'web') {
-    return (mem[region] ?? []).map((r) => r.data);
-  }
-  const db = await getDb();
-  const rows = await db.getAllAsync<{ data: string }>(
-    'SELECT data FROM alerts WHERE region = ? ORDER BY fetched_at DESC LIMIT ?',
-    region,
-    MAX_PER_REGION,
-  );
-  return rows.map((r) => JSON.parse(r.data) as AlertResponse);
-}
-
-export async function getLastFetchedAt(region: string): Promise<number | null> {
-  if (Platform.OS === 'web') {
-    return memNewest(region)?.fetchedAt ?? null;
-  }
-  const db = await getDb();
-  const row = await db.getFirstAsync<{ fetched_at: number }>(
-    'SELECT fetched_at FROM alerts WHERE region = ? ORDER BY fetched_at DESC LIMIT 1',
-    region,
-  );
-  return row ? row.fetched_at : null;
-}
-
-export async function isStale(region: string): Promise<boolean> {
-  const ts = await getLastFetchedAt(region);
-  if (!ts) return true;
-  return Date.now() - ts > STALE_THRESHOLD_MS;
 }

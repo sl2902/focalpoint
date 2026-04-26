@@ -10,8 +10,7 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AlertCard } from '../../components/AlertCard';
-import { AlertCardSkeleton } from '../../components/AlertCardSkeleton';
-import { useAlerts, RegionEntry } from '../../hooks/useAlerts';
+import { useAlerts } from '../../hooks/useAlerts';
 import type { DaysOption } from '../../store/useSettingsStore';
 import type { AlertResponse } from '../../types/api';
 
@@ -22,7 +21,7 @@ const DAYS_LABELS: Record<number, string> = {
 
 export default function FeedScreen() {
   const router = useRouter();
-  const { entries, days, setDays, refresh, refreshing } = useAlerts();
+  const { alerts, days, setDays, refresh, refreshing } = useAlerts();
 
   const handlePress = (alert: AlertResponse) => {
     router.push({
@@ -31,25 +30,7 @@ export default function FeedScreen() {
     });
   };
 
-  const renderEntry = ({ item }: { item: RegionEntry }) => {
-    if (item.status === 'loading' && !item.alert) {
-      return <AlertCardSkeleton />;
-    }
-    if (item.status === 'error' && !item.alert) {
-      return (
-        <View style={styles.errorRow}>
-          <Text style={styles.errorRegion}>{item.region}</Text>
-          <Text style={styles.errorMsg}>Could not load — pull to retry</Text>
-        </View>
-      );
-    }
-    return (
-      <AlertCard
-        alert={item.alert!}
-        onPress={() => handlePress(item.alert!)}
-      />
-    );
-  };
+  const isEmpty = alerts.length === 0 && !refreshing;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -77,9 +58,11 @@ export default function FeedScreen() {
       </View>
 
       <FlatList
-        data={entries}
+        data={alerts}
         keyExtractor={(item) => item.region}
-        renderItem={renderEntry}
+        renderItem={({ item }) => (
+          <AlertCard alert={item} onPress={() => handlePress(item)} />
+        )}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -87,7 +70,18 @@ export default function FeedScreen() {
             tintColor="#2563eb"
           />
         }
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, isEmpty && styles.listEmpty]}
+        ListEmptyComponent={
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyIcon}>📡</Text>
+            <Text style={styles.emptyTitle}>
+              No {DAYS_LABELS[days]} data available yet
+            </Text>
+            <Text style={styles.emptyBody}>
+              Data is updated automatically in the background.
+            </Text>
+          </View>
+        }
       />
     </SafeAreaView>
   );
@@ -123,29 +117,32 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#f3f4f6',
   },
-  segmentActive: {
-    backgroundColor: '#1d4ed8',
-  },
-  segmentText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#6b7280',
-  },
-  segmentTextActive: {
-    color: '#fff',
-  },
+  segmentActive: { backgroundColor: '#1d4ed8' },
+  segmentText: { fontSize: 13, fontWeight: '600', color: '#6b7280' },
+  segmentTextActive: { color: '#fff' },
 
   list: { paddingVertical: 8 },
+  listEmpty: { flex: 1 },
 
-  errorRow: {
-    marginHorizontal: 16,
-    marginVertical: 6,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#fee2e2',
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 32,
+    paddingTop: 80,
   },
-  errorRegion: { fontSize: 14, fontWeight: '600', color: '#374151', marginBottom: 2 },
-  errorMsg: { fontSize: 12, color: '#ef4444' },
+  emptyIcon: { fontSize: 40, marginBottom: 16 },
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  emptyBody: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    lineHeight: 21,
+  },
 });

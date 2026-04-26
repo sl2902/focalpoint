@@ -6,14 +6,19 @@ interface Props {
 }
 
 export function CachedBanner({ lastFetchedAt }: Props) {
-  const timeLabel = lastFetchedAt
-    ? lastFetchedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  const label = lastFetchedAt
+    ? lastFetchedAt.toLocaleString([], {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
     : 'unknown';
 
   return (
     <View style={styles.banner}>
       <Text style={styles.text}>
-        CACHED — last updated {timeLabel}
+        CACHED — last updated {label}
       </Text>
     </View>
   );
