@@ -22,6 +22,7 @@ class AlertResponse(BaseModel):
     region: str
     timestamp: datetime
     confidence: float
+    days: int | None = None  # populated by /alerts/feed; None on per-region responses
 
 
 class MapMarker(BaseModel):

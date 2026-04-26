@@ -74,7 +74,7 @@ _ALERT_RESPONSE_SCHEMA = genai_types.Schema(
 # response_schema enforces AlertOutput structure at the API level.
 _GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
-    max_output_tokens=1024,
+    max_output_tokens=512,
     response_mime_type="application/json",
     response_schema=_ALERT_RESPONSE_SCHEMA,
 )

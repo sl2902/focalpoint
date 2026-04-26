@@ -150,6 +150,7 @@ async def _build_alert(
             region=region,
             timestamp=datetime.now(tz=timezone.utc),
             confidence=0.0,
+            days=days,
         )
         await store.upsert_alert(
             db_path=db_path,
@@ -183,6 +184,7 @@ async def _build_alert(
         region=region,
         timestamp=alert.timestamp,
         confidence=severity_result.confidence,
+        days=days,
     )
 
     await store.upsert_alert(

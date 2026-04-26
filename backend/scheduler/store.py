@@ -57,16 +57,18 @@ _SELECT_FRESH_SQL = """
 SELECT * FROM alerts WHERE region = ? AND days = ? AND created_at > ?
 """
 
-# Feed: most recently written alert per region, regardless of days window.
-# GROUP BY region + MAX(created_at) ensures one row per region even when
-# the same region has been fetched with different days values.
+# Feed: latest alert per (region, days) combination so the mobile client
+# receives data for every days window in a single call and can populate
+# each tab of its segmented control without extra requests.
 _SELECT_ALL_ORDERED_SQL = """
 SELECT a.* FROM alerts a
 INNER JOIN (
-    SELECT region, MAX(created_at) AS latest
+    SELECT region, days, MAX(created_at) AS latest
     FROM alerts
-    GROUP BY region
-) newest ON a.region = newest.region AND a.created_at = newest.latest
+    GROUP BY region, days
+) newest ON a.region = newest.region
+         AND a.days  = newest.days
+         AND a.created_at = newest.latest
 ORDER BY CASE a.severity
     WHEN 'CRITICAL' THEN 0
     WHEN 'RED'      THEN 1
@@ -139,10 +141,10 @@ async def get_cached_alert(
 
 
 async def get_latest_per_region(db_path: str) -> list[AlertResponse]:
-    """Return the most recent alert per region, ordered CRITICAL → RED → AMBER → GREEN.
+    """Return the latest alert per (region, days) pair, ordered by severity.
 
-    Picks the row with the highest created_at per region so the result is
-    independent of the days lookback window used when the alert was generated.
+    Returns one entry per (region, days) combination so the mobile client
+    can populate every segmented-control tab from a single feed request.
     """
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
@@ -160,4 +162,5 @@ def _row_to_alert_response(row: aiosqlite.Row) -> AlertResponse:
         region=row["region"],
         timestamp=datetime.fromisoformat(row["timestamp"]),
         confidence=row["confidence"],
+        days=row["days"],
     )

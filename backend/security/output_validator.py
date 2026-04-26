@@ -121,19 +121,45 @@ class AlertOutput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_SUMMARY_MAX = 1000
+_SUMMARY_SAFE = 900  # truncate target — leaves headroom for the validator
+
+
+def _truncate_summary(text: str) -> str:
+    """Truncate a runaway summary to the last complete sentence within _SUMMARY_SAFE chars."""
+    if len(text) <= _SUMMARY_MAX:
+        return text
+    window = text[:_SUMMARY_SAFE]
+    # Walk sentence terminators from the right so we keep the most content.
+    for sep in (". ", "! ", "? "):
+        pos = window.rfind(sep)
+        if pos > 20:
+            return window[: pos + 1].rstrip()
+    # No sentence boundary — hard cut with ellipsis.
+    return window.rstrip() + "…"
+
+
 def validate_output(raw: dict, region: str) -> AlertOutput:
     """
     Validate a Gemma 4 response dict against AlertOutput.
 
-    On success returns the validated model. On any ValidationError logs
-    the failure (without the raw output) and returns a safe fallback
-    with severity=INSUFFICIENT_DATA so the mobile client always receives
-    a well-formed response.
+    Pre-truncates the summary when the model produces a repetition loop
+    (output > 1000 chars) so valid leading content is preserved rather
+    than discarding the whole response. On any remaining ValidationError
+    logs the failure and returns a safe fallback with severity=INSUFFICIENT_DATA.
 
     Args:
         raw:    Dict parsed from Gemma 4's JSON response.
         region: Watch zone region string, threaded into the fallback.
     """
+    # Rescue repetition-loop responses by truncating before Pydantic sees them.
+    if isinstance(raw.get("summary"), str) and len(raw["summary"]) > _SUMMARY_MAX:
+        original_len = len(raw["summary"])
+        raw = {**raw, "summary": _truncate_summary(raw["summary"])}
+        logger.warning(
+            f"output_validator: summary truncated {original_len} → {len(raw['summary'])} chars "
+            f"for region={region!r} (repetition loop detected)"
+        )
     logger.debug(f"output_validator: raw dict before validation — {raw!r}")
     try:
         return AlertOutput.model_validate(raw)
