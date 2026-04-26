@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from backend.api.dependencies import get_gdelt_cloud_connector
+from backend.api.dependencies import DaysQuery, get_gdelt_cloud_connector
 from backend.api.schemas import MapMarker, MarkersResponse
 from backend.ingestion.gdeltcloud_connector import GdeltCloudConnector
 from backend.security.rate_limiter import MAP_RATE_LIMIT, limiter
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/map", tags=["map"])
 async def get_map_markers(
     request: Request,
     region: str = Query(min_length=2, max_length=100),
-    days: int = Query(default=7, ge=1, le=30),
+    days: DaysQuery = 7,
     gdelt_cloud: GdeltCloudConnector = Depends(get_gdelt_cloud_connector),
 ) -> MarkersResponse:
     """Return geolocated incident markers for the mobile map view."""

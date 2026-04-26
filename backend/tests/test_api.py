@@ -211,7 +211,7 @@ class TestGetRegionAlerts:
         assert resp.status_code == 200
 
     def test_days_out_of_range_rejected(self, client: TestClient) -> None:
-        resp = client.get("/alerts/Gaza?days=31")
+        resp = client.get("/alerts/Gaza?days=5")
         assert resp.status_code == 422
 
     @pytest.mark.parametrize("days,expected_timespan", [
@@ -237,7 +237,7 @@ class TestGetRegionAlerts:
         assert kwargs.get("timespan") == expected_timespan
 
     def test_different_days_cached_independently(self, client: TestClient) -> None:
-        """days=1 and days=25 use separate cache entries — each triggers the generator
+        """days=1 and days=14 use separate cache entries — each triggers the generator
         on first call, then hits cache on the second call with the same days value."""
         mock_gen = MagicMock()
         mock_gen.generate = MagicMock(return_value=_ALERT_OUTPUT)
@@ -251,12 +251,12 @@ class TestGetRegionAlerts:
         client.get("/alerts/Gaza?days=1")
         assert mock_gen.generate.call_count == 1
 
-        # First call for days=25 — different cache slot, generator called again.
-        client.get("/alerts/Gaza?days=25")
+        # First call for days=14 — different cache slot, generator called again.
+        client.get("/alerts/Gaza?days=14")
         assert mock_gen.generate.call_count == 2
 
-        # Second call for days=25 — cache hit, generator NOT called again.
-        client.get("/alerts/Gaza?days=25")
+        # Second call for days=14 — cache hit, generator NOT called again.
+        client.get("/alerts/Gaza?days=14")
         assert mock_gen.generate.call_count == 2
 
         app.dependency_overrides[get_alert_generator] = _mock_generator
@@ -817,7 +817,7 @@ class TestGetMapMarkers:
         assert resp.status_code == 200
 
     def test_days_out_of_range_rejected(self, client: TestClient) -> None:
-        resp = client.get("/map/markers", params={"region": "Gaza", "days": 31})
+        resp = client.get("/map/markers", params={"region": "Gaza", "days": 5})
         assert resp.status_code == 422
 
     def test_missing_region_rejected(self, client: TestClient) -> None:
@@ -908,6 +908,7 @@ class TestGetRegionAlertsCache:
             store.upsert_alert(
                 tmp_db_path,
                 region="Ukraine",
+                days=7,
                 severity="AMBER",
                 summary="Cached summary — elevated conflict activity in region.",
                 source_citations=[
@@ -968,7 +969,7 @@ class TestGetRegionAlertsCache:
 
         assert resp.status_code == 200
         cached = asyncio.get_event_loop().run_until_complete(
-            store.get_cached_alert(tmp_db_path, "Gaza")
+            store.get_cached_alert(tmp_db_path, "Gaza", days=7)
         )
         assert cached is not None
         assert cached.region == "Gaza"

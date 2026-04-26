@@ -150,6 +150,7 @@ class GdeltConnector:
         aggregate_tone: float = 0.0
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
             for attempt in range(_MAX_RETRIES + 1):
+                # Phase 1: network call — retry on timeout or HTTP error.
                 try:
                     artlist_resp, tone_resp = await asyncio.gather(
                         client.get(GDELT_BASE_URL, params=artlist_params),
@@ -157,9 +158,6 @@ class GdeltConnector:
                     )
                     artlist_resp.raise_for_status()
                     tone_resp.raise_for_status()
-                    articles = GdeltResponse(**artlist_resp.json()).articles
-                    aggregate_tone = _parse_aggregate_tone(tone_resp.json())
-                    break
                 except Exception as exc:
                     if attempt < _MAX_RETRIES:
                         logger.warning(
@@ -173,6 +171,28 @@ class GdeltConnector:
                             " — returning empty response"
                         )
                         return GdeltResponse()
+                    continue
+
+                # Phase 2: parse — GDELT returns empty or non-JSON bodies when
+                # it has no results. Treat these as 0 articles and stop retrying
+                # — a bad parse won't improve on the next attempt.
+                artlist_body = artlist_resp.text.strip()
+                try:
+                    articles = GdeltResponse(**artlist_resp.json()).articles if artlist_body else []
+                except (json.JSONDecodeError, ValueError):
+                    logger.debug(
+                        f"GDELT: non-JSON artlist body for {query!r} — 0 articles"
+                        f" (body[:80]={artlist_body[:80]!r})"
+                    )
+                    articles = []
+
+                tone_body = tone_resp.text.strip()
+                try:
+                    aggregate_tone = _parse_aggregate_tone(tone_resp.json()) if tone_body else 0.0
+                except (json.JSONDecodeError, ValueError):
+                    aggregate_tone = 0.0
+
+                break
 
         logger.info(
             f"GDELT: fetched {len(articles)} articles"

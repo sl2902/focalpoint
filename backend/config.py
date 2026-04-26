@@ -36,11 +36,12 @@ class Settings(BaseSettings):
     # recognises. Add entries here when the API returns 0 events for a region
     # that has confirmed activity under a different name.
     # Note: "Syrian Arab Republic" tested and rejected with 400 — "Syria" is correct.
-    # Note: "Gaza" uses "Gaza Strip" for GDELT Cloud queries. CPJ and RSF data for Gaza
-    # are sourced from the broader Palestinian territory via CPJ_ALIASES and RSF_ALIASES
+    # Note: "Gaza Strip" rejected with 400 — GDELT Cloud does not recognise it as a
+    # country name. "Palestine" is the accepted name for Palestinian-territory events.
+    # CPJ and RSF data for Gaza are sourced via CPJ_ALIASES / RSF_ALIASES separately
     # ("Israel and the Occupied Palestinian Territory" and "West Bank and Gaza" resp.)
     GDELT_CLOUD_ALIASES: dict[str, str] = {
-        "Gaza": "Gaza Strip",
+        "Gaza": "Palestine",
     }
 
 

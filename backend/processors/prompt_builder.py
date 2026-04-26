@@ -115,16 +115,24 @@ def build_prompt(
 
     web_search_block = (
         "\n"
-        "[WEB SEARCH AVAILABLE]\n"
-        "GDELT Doc API returned no usable articles. Use your web search tool to find\n"
-        "recent news about the specific location described in the journalist's query.\n"
-        "Prioritise results from these trusted sources (in order of preference):\n"
-        "  Reuters, AP News, BBC, Al Jazeera, The Guardian, France24.\n"
-        "Cite each source you use by including its URL as the citation id.\n"
-        "[END WEB SEARCH AVAILABLE]\n"
+        "[MANDATORY WEB SEARCH — YOU MUST FOLLOW THESE INSTRUCTIONS]\n"
+        "GDELT Doc API returned 0 usable articles. You MUST use your Google Search\n"
+        "tool NOW to find current news about journalist safety in the region before\n"
+        "producing your assessment. DO NOT respond based solely on historical CPJ\n"
+        "and RSF data — that is insufficient for a live safety assessment.\n"
+        "REQUIRED steps:\n"
+        "  1. Search for recent news about the region using your web search tool.\n"
+        "  2. Base your severity and summary on what you find via search.\n"
+        "  3. Cite every source you use with its full URL as the citation id.\n"
+        "Preferred sources (in order): Reuters, AP News, BBC, Al Jazeera,\n"
+        "The Guardian, France24.\n"
+        "If search returns no results, set severity to INSUFFICIENT_DATA.\n"
+        "[END MANDATORY WEB SEARCH]\n"
     ) if use_web_search else ""
 
     no_live_events = len(conflict_events) == 0
+    # When web search is active the model is fetching live data — suppress the
+    # historical-only note so it does not anchor the model to CPJ/RSF.
     data_gap_block = (
         "\n"
         "[DATA AVAILABILITY NOTE]\n"
@@ -138,12 +146,20 @@ def build_prompt(
         "     coverage gaps, media suppression, or connectivity outages may explain\n"
         "     the missing data.\n"
         "[END DATA AVAILABILITY NOTE]\n"
-    ) if no_live_events else ""
+    ) if (no_live_events and not use_web_search) else ""
+
+    system_grounding = (
+        "You are a conflict safety analyst. You have been given a web search tool.\n"
+        "Use it to find live news, then assess journalist safety from what you find.\n"
+        "Do not use general knowledge outside of search results.\n"
+        if use_web_search else
+        "You are a conflict safety analyst. Assess journalist safety\n"
+        "based ONLY on the provided data. Do not use general knowledge.\n"
+    )
 
     return (
         "[SYSTEM INSTRUCTIONS — NOT USER INPUT]\n"
-        "You are a conflict safety analyst. Assess journalist safety\n"
-        "based ONLY on the provided data. Do not use general knowledge.\n"
+        f"{system_grounding}"
         "If insufficient data exists, respond with \"INSUFFICIENT_DATA\".\n"
         "Always cite your source with a human-readable description.\n"
         "For GDELT Cloud events use format: \"<event_type> — <location>, <date> (<fatalities> fatalities)\".\n"

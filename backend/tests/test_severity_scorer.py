@@ -715,11 +715,11 @@ class TestWatchZoneConfig:
         from backend.config import settings
         assert "Gaza" in settings.WATCH_ZONES
 
-    def test_gaza_gdelt_cloud_alias_is_gaza_strip(self) -> None:
-        """Gaza WATCH_ZONE uses 'Gaza Strip' for GDELT Cloud queries — distinct
-        from Palestine which queries directly under its own name."""
+    def test_gaza_gdelt_cloud_alias_is_palestine(self) -> None:
+        """Gaza WATCH_ZONE uses 'Palestine' for GDELT Cloud queries —
+        'Gaza Strip' is rejected with 400 by the GDELT Cloud API."""
         from backend.config import settings
-        assert settings.GDELT_CLOUD_ALIASES.get("Gaza") == "Gaza Strip"
+        assert settings.GDELT_CLOUD_ALIASES.get("Gaza") == "Palestine"
 
     def test_gaza_not_in_no_fatalities_filter(self) -> None:
         """Gaza has confirmed fatalities events — keep the fatalities filter on."""
@@ -802,12 +802,12 @@ class TestGazaAliasResolution:
         rsf_key = RSF_ALIASES.get("Gaza", "Gaza")
         assert rsf_key in RSF_SCORES, f"RSF key {rsf_key!r} not found in RSF_SCORES"
 
-    def test_gaza_gdelt_cloud_alias_resolves_to_gaza_strip(self) -> None:
-        """Gaza is a distinct watch zone — GDELT Cloud queries use 'Gaza Strip'."""
+    def test_gaza_gdelt_cloud_alias_resolves_to_palestine(self) -> None:
+        """Gaza queries GDELT Cloud as 'Palestine' — 'Gaza Strip' returns 400."""
         from backend.config import settings
-        assert settings.GDELT_CLOUD_ALIASES.get("Gaza") == "Gaza Strip"
+        assert settings.GDELT_CLOUD_ALIASES.get("Gaza") == "Palestine"
 
     def test_gaza_strip_not_in_gdelt_cloud_aliases(self) -> None:
-        """'Gaza Strip' is the GDELT Cloud target string, not itself aliased."""
+        """'Gaza Strip' is not a valid GDELT Cloud country name — must not appear as a key."""
         from backend.config import settings
         assert "Gaza Strip" not in settings.GDELT_CLOUD_ALIASES

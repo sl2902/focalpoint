@@ -13,7 +13,24 @@ from __future__ import annotations
 from typing import Annotated
 
 import redis.asyncio as aioredis
-from fastapi import Depends, Request
+from fastapi import Depends, Query, Request
+from pydantic import AfterValidator
+
+# Allowed lookback windows — must match the mobile segmented control.
+VALID_DAYS = frozenset({1, 3, 7, 14, 30})
+
+def _check_days(v: int) -> int:
+    if v not in VALID_DAYS:
+        raise ValueError(f"days must be one of: {sorted(VALID_DAYS)}")
+    return v
+
+# Annotated type for all days query parameters. FastAPI reads the
+# json_schema_extra enum list and renders a dropdown in Swagger UI.
+DaysQuery = Annotated[
+    int,
+    AfterValidator(_check_days),
+    Query(json_schema_extra={"enum": [1, 3, 7, 14, 30]}),
+]
 
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector

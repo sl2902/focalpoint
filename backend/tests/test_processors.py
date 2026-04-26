@@ -277,12 +277,12 @@ class TestBuildPrompt:
 
     def test_web_search_block_present_when_use_web_search_true(self):
         prompt = self._prompt(use_web_search=True)
-        assert "[WEB SEARCH AVAILABLE]" in prompt
-        assert "[END WEB SEARCH AVAILABLE]" in prompt
+        assert "[MANDATORY WEB SEARCH" in prompt
+        assert "[END MANDATORY WEB SEARCH]" in prompt
 
     def test_web_search_block_absent_by_default(self):
         prompt = self._prompt()
-        assert "[WEB SEARCH AVAILABLE]" not in prompt
+        assert "[MANDATORY WEB SEARCH" not in prompt
 
     def test_web_search_block_lists_trusted_sources(self):
         prompt = self._prompt(use_web_search=True)
@@ -291,7 +291,7 @@ class TestBuildPrompt:
 
     def test_web_search_block_appears_before_retrieved_data(self):
         prompt = self._prompt(use_web_search=True)
-        ws_pos = prompt.index("[WEB SEARCH AVAILABLE]")
+        ws_pos = prompt.index("[MANDATORY WEB SEARCH")
         data_pos = prompt.index("[RETRIEVED DATA]")
         assert ws_pos < data_pos
 
@@ -942,7 +942,7 @@ class TestAlertGeneratorWebSearch:
             region=_REGION,
         )
         prompt_arg = gemma.generate_alert.call_args.args[0]
-        assert "[WEB SEARCH AVAILABLE]" in prompt_arg
+        assert "[MANDATORY WEB SEARCH" in prompt_arg
 
     def test_no_web_search_prompt_omits_instruction_when_articles_present(self):
         gemma = _mock_gemma_client()
@@ -956,7 +956,7 @@ class TestAlertGeneratorWebSearch:
             region=_REGION,
         )
         prompt_arg = gemma.generate_alert.call_args.args[0]
-        assert "[WEB SEARCH AVAILABLE]" not in prompt_arg
+        assert "[MANDATORY WEB SEARCH" not in prompt_arg
 
     def test_scorer_insufficient_data_veto_suppressed_when_web_search_true(self):
         """articles=[], scorer=INSUFFICIENT_DATA, Gemma=RED → final severity=RED.

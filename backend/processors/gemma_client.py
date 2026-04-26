@@ -20,8 +20,11 @@ from __future__ import annotations
 import json
 import re
 
+import time
+
 import httpx
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from loguru import logger
 
@@ -89,6 +92,39 @@ _TRANSCRIBE_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
     max_output_tokens=512,
 )
+
+
+def _extract_grounding_urls(response) -> list[tuple[str, str]]:
+    """
+    Pull real source URLs out of the grounding metadata on a Gemini response.
+
+    Returns a list of (uri, title) pairs. The grounding_chunks field contains
+    the actual publisher URLs (e.g. reuters.com/...) — distinct from the
+    vertexaisearch.cloud.google.com redirect URLs the model uses internally.
+    Returns an empty list on any error or when metadata is absent.
+    """
+    try:
+        candidates = response.candidates or []
+        if not candidates:
+            return []
+        metadata = getattr(candidates[0], "grounding_metadata", None)
+        if not metadata:
+            return []
+        chunks = getattr(metadata, "grounding_chunks", None) or []
+        result: list[tuple[str, str]] = []
+        for chunk in chunks:
+            web = getattr(chunk, "web", None)
+            if not web:
+                continue
+            uri = getattr(web, "uri", None)
+            title = getattr(web, "title", None) or uri
+            if uri and "vertexaisearch.cloud.google.com" not in uri:
+                result.append((uri, str(title)))
+        logger.debug(f"grounding: extracted {len(result)} real URLs from metadata")
+        return result
+    except Exception as exc:
+        logger.debug(f"grounding: could not extract URLs — {exc}")
+        return []
 
 
 def _extract_json(raw_text: str) -> dict:
@@ -176,6 +212,26 @@ class GemmaClient:
                     f" region={region!r} — {type(exc2).__name__}: {exc2}"
                 )
                 return _fallback(region)
+        except genai_errors.ServerError as exc:
+            # 5xx from the Gemini API (commonly 504 DEADLINE_EXCEEDED under load).
+            # Sleep 3 s before retrying — immediate retry hits the same overloaded
+            # backend. One retry only; if it fails again return the safe fallback.
+            logger.warning(
+                f"gemma_client: ServerError for region={region!r}, retrying in 3 s — {exc}"
+            )
+            time.sleep(3)
+            try:
+                response = self._client.models.generate_content(
+                    model=_BACKEND_MODEL,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc2:
+                logger.warning(
+                    f"gemma_client: retry after ServerError failed for"
+                    f" region={region!r} — {type(exc2).__name__}: {exc2}"
+                )
+                return _fallback(region)
         except Exception as exc:
             logger.warning(
                 f"gemma_client: API call failed for region={region!r} — {type(exc).__name__}: {exc}"
@@ -191,12 +247,25 @@ class GemmaClient:
 
         logger.debug(f"gemma_client: raw response for region={region!r} — {raw_text!r}")
 
+        # Extract real publisher URLs from grounding metadata while we still
+        # have the response object — these replace the expiring redirect URLs
+        # that the model embeds in its citation ids.
+        grounding_urls = _extract_grounding_urls(response) if use_web_search else []
+
         try:
             raw_dict = _extract_json(raw_text)
         except json.JSONDecodeError as exc:
             logger.warning(
                 f"gemma_client: JSON parse failed for region={region!r} — {exc}"
             )
+            if use_web_search:
+                # Web-search responses are prose, not JSON. Pass the grounded
+                # text (plus real URLs from metadata) to a second JSON-constrained
+                # call so we always get a typed AlertOutput.
+                logger.info(
+                    f"gemma_client: structuring web-search prose for region={region!r}"
+                )
+                return self._structure_web_response(raw_text, region, grounding_urls)
             return _fallback(region)
 
         result = validate_output(raw_dict, region)
@@ -214,13 +283,86 @@ class GemmaClient:
                 retry_text = retry_response.text
                 if retry_text:
                     logger.debug(f"gemma_client: retry raw response for region={region!r} — {retry_text!r}")
-                    result = validate_output(_extract_json(retry_text), region)
+                    retry_grounding_urls = (
+                        _extract_grounding_urls(retry_response) if use_web_search else []
+                    ) or grounding_urls
+                    if use_web_search:
+                        try:
+                            result = validate_output(_extract_json(retry_text), region)
+                        except json.JSONDecodeError:
+                            result = self._structure_web_response(
+                                retry_text, region, retry_grounding_urls
+                            )
+                    else:
+                        result = validate_output(_extract_json(retry_text), region)
             except Exception as exc:
                 logger.warning(
                     f"gemma_client: retry failed for region={region!r} — {type(exc).__name__}: {exc}"
                 )
 
         return result
+
+    def _structure_web_response(
+        self,
+        grounded_text: str,
+        region: str,
+        grounding_urls: list[tuple[str, str]] | None = None,
+    ) -> AlertOutput:
+        """
+        Convert free-form web-search prose into a structured AlertOutput.
+
+        Called when generate_alert's web-search response is not JSON-parseable.
+        Passes the grounded text (plus real publisher URLs from grounding metadata)
+        to a second JSON-constrained call so we always get a typed AlertOutput.
+        Falls back to _fallback(region) if the second call also fails.
+
+        Args:
+            grounded_text:  Free-form prose from the web-search response.
+            region:         Region label for the fallback path.
+            grounding_urls: Real (uri, title) pairs from grounding_metadata.
+                            Injected into the prompt so the model cites permanent
+                            publisher URLs instead of expiring redirect URLs.
+        """
+        urls = grounding_urls or []
+        if urls:
+            sources_block = "\n\nVerified source URLs (use these exact URLs as citation ids):\n"
+            for uri, title in urls[:10]:
+                sources_block += f"  - {uri}  ({title})\n"
+        else:
+            sources_block = ""
+
+        structure_prompt = (
+            f"You have gathered the following live intelligence about journalist "
+            f"safety in {region}:\n\n"
+            f"{grounded_text[:3000]}"
+            f"{sources_block}\n\n"
+            "Based solely on the intelligence above, produce your JSON safety assessment. "
+            "For each citation, use one of the verified source URLs above as the id field "
+            "if the source is listed; otherwise use CPJ:<detail> or RSF:<detail>. "
+            "Never use vertexaisearch.cloud.google.com URLs."
+        )
+        try:
+            response = self._client.models.generate_content(
+                model=_BACKEND_MODEL,
+                contents=structure_prompt,
+                config=_GENERATION_CONFIG,
+            )
+            text = response.text
+            if not text:
+                logger.warning(
+                    f"gemma_client: _structure_web_response got empty response for region={region!r}"
+                )
+                return _fallback(region)
+            logger.debug(
+                f"gemma_client: structured web response for region={region!r} — {text!r}"
+            )
+            return validate_output(_extract_json(text), region)
+        except Exception as exc:
+            logger.warning(
+                f"gemma_client: _structure_web_response failed for region={region!r}"
+                f" — {type(exc).__name__}: {exc}"
+            )
+            return _fallback(region)
 
     def transcribe_audio(
         self,

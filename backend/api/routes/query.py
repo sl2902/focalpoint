@@ -111,6 +111,10 @@ async def query(
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
 
     use_web_search = len(gdelt_resp.articles) == 0
+    logger.debug(
+        f"query: region={region!r} gdelt_articles={len(gdelt_resp.articles)}"
+        f" use_web_search={use_web_search}"
+    )
     audio_provided = audio_bytes is not None
 
     # Cache check — only for text-only, GDELT-backed responses.

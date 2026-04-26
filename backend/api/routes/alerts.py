@@ -21,6 +21,7 @@ from loguru import logger
 from backend.alerts.severity_scorer import SeverityLevel, score_severity
 from backend.security.output_validator import Citation
 from backend.api.dependencies import (
+    DaysQuery,
     get_alert_generator,
     get_alerts_db_path,
     get_cpj_connector,
@@ -46,7 +47,7 @@ async def get_alerts_feed(
     request: Request,
     db_path: str = Depends(get_alerts_db_path),
 ) -> list[AlertResponse]:
-    """Return the latest stored alert per region, ordered by severity."""
+    """Return the most recent alert per region, ordered by severity."""
     return await store.get_latest_per_region(db_path)
 
 
@@ -58,7 +59,7 @@ async def get_watchzone_alerts(
     longitude: float = Query(ge=-180, le=180),
     radius_km: float = Query(ge=1, le=500),
     label: str = Query(min_length=1, max_length=100),
-    days: int = Query(default=1, ge=1, le=30),
+    days: DaysQuery = 7,
     db_path: str = Depends(get_alerts_db_path),
     gdelt_cloud: GdeltCloudConnector = Depends(get_gdelt_cloud_connector),
     gdelt: GdeltConnector = Depends(get_gdelt_connector),
@@ -82,7 +83,7 @@ async def get_watchzone_alerts(
 async def get_region_alerts(
     request: Request,
     region: str = Path(min_length=2, max_length=100),
-    days: int = Query(default=1, ge=1, le=30),
+    days: DaysQuery = 7,
     db_path: str = Depends(get_alerts_db_path),
     gdelt_cloud: GdeltCloudConnector = Depends(get_gdelt_cloud_connector),
     gdelt: GdeltConnector = Depends(get_gdelt_connector),
