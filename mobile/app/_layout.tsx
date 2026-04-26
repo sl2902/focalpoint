@@ -16,7 +16,6 @@ import { useDiscreetStore } from '../store/useDiscreetStore';
 
 export default function RootLayout() {
   const hydrate = useSettingsStore((s) => s.hydrate);
-  const discreetMode = useSettingsStore((s) => s.discreetMode);
   const setDiscreetMode = useDiscreetStore((s) => s.setDiscreetMode);
 
   useEffect(() => {
@@ -27,9 +26,9 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#fff' }}>
       <SafeAreaProvider>
-        <Stack screenOptions={{ headerShown: false }}>
+        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#fff' } }}>
           <Stack.Screen name="(tabs)" />
           <Stack.Screen
             name="alert/[id]"

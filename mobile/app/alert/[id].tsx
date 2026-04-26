@@ -1,10 +1,9 @@
 /**
  * Alert Detail screen (modal).
  *
- * Route params: { region: string, timestamp: string }
- * Full AlertResponse is loaded from SQLite cache using region as lookup key.
- * We do NOT pass the full JSON via route params — React Navigation has a
- * param size limit and serialisation is expensive.
+ * Route params: { id: string, data: string (JSON-serialised AlertResponse) }
+ * The full alert is passed as a serialised JSON param from the feed —
+ * no cache lookup required.
  *
  * Displays:
  * - Severity badge
@@ -25,7 +24,6 @@ import { CitationList } from '../../components/CitationList';
 import { FloorWarning } from '../../components/FloorWarning';
 import { ElevationNote } from '../../components/ElevationNote';
 import { CachedBanner } from '../../components/CachedBanner';
-import { getAlertByRegion } from '../../services/cache';
 import type { AlertResponse } from '../../types/api';
 
 // Detect elevation note appended by alert_generator.py
@@ -34,21 +32,20 @@ const ELEVATION_PATTERN = /\[Elevation note:[^\]]+\]/i;
 const FLOOR_PATTERN = /\[Historical risk floor applied[^\]]*\]/i;
 
 export default function AlertDetailScreen() {
-  const { region, timestamp } = useLocalSearchParams<{
-    id: string;
-    region: string;
-    timestamp: string;
-  }>();
+  const { data } = useLocalSearchParams<{ id: string; data: string }>();
 
   const [alert, setAlert] = useState<AlertResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!region) return;
-    getAlertByRegion(region)
-      .then(setAlert)
-      .finally(() => setLoading(false));
-  }, [region]);
+    if (!data) { setLoading(false); return; }
+    try {
+      setAlert(JSON.parse(data) as AlertResponse);
+    } catch {
+      // leave alert null — "not found" UI handles it
+    }
+    setLoading(false);
+  }, [data]);
 
   if (loading) {
     return (
@@ -86,7 +83,7 @@ export default function AlertDetailScreen() {
         </View>
 
         <Text style={styles.timestamp}>
-          {new Date(alert.timestamp).toLocaleString()}
+          {new Date(alert.timestamp).toLocaleString([], { timeZone: 'UTC' })} UTC
         </Text>
 
         <ConfidenceBar confidence={alert.confidence} />

@@ -1,17 +1,6 @@
-/**
- * Expo AV voice recording hook for the Query screen.
- *
- * Usage:
- *   const { isRecording, startRecording, stopRecording, audioUri } = useAudio();
- *
- * - Hold the mic button → call startRecording()
- * - Release            → call stopRecording(), then use audioUri
- * - audioUri is the local file path to pass to services/query.ts postQuery / postTranscribe
- */
-
 import { useState, useRef, useCallback } from 'react';
-import { Audio } from 'expo-av';
 import { Platform } from 'react-native';
+import { Audio } from 'expo-av';
 
 interface UseAudioResult {
   isRecording: boolean;
@@ -29,6 +18,7 @@ export function useAudio(): UseAudioResult {
   const [error, setError] = useState<string | null>(null);
 
   const startRecording = useCallback(async () => {
+    if (Platform.OS === 'web') return;
     setError(null);
     try {
       const { granted } = await Audio.requestPermissionsAsync();
@@ -36,12 +26,10 @@ export function useAudio(): UseAudioResult {
         setError('Microphone permission denied');
         return;
       }
-
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
       });
-
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY,
       );
@@ -53,7 +41,7 @@ export function useAudio(): UseAudioResult {
   }, []);
 
   const stopRecording = useCallback(async (): Promise<string | null> => {
-    if (!recordingRef.current) return null;
+    if (Platform.OS === 'web' || !recordingRef.current) return null;
     try {
       await recordingRef.current.stopAndUnloadAsync();
       const uri = recordingRef.current.getURI();

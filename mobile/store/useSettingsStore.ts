@@ -1,17 +1,5 @@
-/**
- * Global settings store, persisted to Expo SecureStore.
- *
- * Fields:
- *   watchZone     — one of the 9 backend WATCH_ZONES
- *   watchZoneArea — optional free-text city/area (e.g. "Northern Gaza")
- *   language      — 2-letter code, sent as Accept-Language header
- *   days          — time window query param for all alert requests
- *   discreetMode  — dark screen, silent alerts, vibration only
- *   notifications — push notification preference
- */
-
 import { create } from 'zustand';
-import * as SecureStore from 'expo-secure-store';
+import { getItem, setItem } from '../services/storage';
 import type { WatchZone } from '../constants/watchZones';
 
 const STORAGE_KEY = 'focalpoint_settings';
@@ -54,12 +42,9 @@ const DEFAULTS: Omit<
 };
 
 async function persist(partial: Partial<typeof DEFAULTS>): Promise<void> {
-  const current = await SecureStore.getItemAsync(STORAGE_KEY);
+  const current = await getItem(STORAGE_KEY);
   const existing = current ? JSON.parse(current) : {};
-  await SecureStore.setItemAsync(
-    STORAGE_KEY,
-    JSON.stringify({ ...existing, ...partial }),
-  );
+  await setItem(STORAGE_KEY, JSON.stringify({ ...existing, ...partial }));
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
@@ -91,7 +76,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   },
 
   hydrate: async () => {
-    const stored = await SecureStore.getItemAsync(STORAGE_KEY);
+    const stored = await getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as Partial<typeof DEFAULTS>;
       set({ ...DEFAULTS, ...parsed });

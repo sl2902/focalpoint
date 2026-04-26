@@ -1,9 +1,5 @@
-/**
- * Detects network connectivity using the NetInfo API bundled with Expo.
- * Returns isConnected (boolean) and isInternetReachable (boolean | null).
- */
-
 import { useState, useEffect } from 'react';
+import { Platform } from 'react-native';
 import NetInfo, { NetInfoState } from '@react-native-community/netinfo';
 
 interface ConnectivityState {
@@ -13,11 +9,12 @@ interface ConnectivityState {
 
 export function useConnectivity(): ConnectivityState {
   const [state, setState] = useState<ConnectivityState>({
-    isConnected: true,         // optimistic default
+    isConnected: true,
     isInternetReachable: null,
   });
 
   useEffect(() => {
+    if (Platform.OS === 'web') return;
     const unsubscribe = NetInfo.addEventListener((netState: NetInfoState) => {
       setState({
         isConnected: netState.isConnected ?? false,

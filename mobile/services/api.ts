@@ -8,8 +8,7 @@
  * - Appends `days` query param to GET requests when provided
  */
 
-import * as SecureStore from 'expo-secure-store';
-import 'react-native-get-random-values'; // polyfill for crypto.randomUUID
+import { getItem, setItem } from './storage';
 
 const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8000';
 
@@ -20,24 +19,23 @@ let _deviceId: string | null = null;
 
 async function getDeviceId(): Promise<string> {
   if (_deviceId) return _deviceId;
-  const stored = await SecureStore.getItemAsync(DEVICE_ID_KEY);
+  const stored = await getItem(DEVICE_ID_KEY);
   if (stored) {
     _deviceId = stored;
     return stored;
   }
-  // Generate a new UUID-style device ID
   const id = `fp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  await SecureStore.setItemAsync(DEVICE_ID_KEY, id);
+  await setItem(DEVICE_ID_KEY, id);
   _deviceId = id;
   return id;
 }
 
 export async function getStoredLanguage(): Promise<string> {
-  return (await SecureStore.getItemAsync(LANGUAGE_KEY)) ?? 'en';
+  return (await getItem(LANGUAGE_KEY)) ?? 'en';
 }
 
 export async function setStoredLanguage(lang: string): Promise<void> {
-  await SecureStore.setItemAsync(LANGUAGE_KEY, lang);
+  await setItem(LANGUAGE_KEY, lang);
 }
 
 interface GetOptions {

@@ -12,7 +12,8 @@ interface Props {
 export function AlertCard({ alert, onPress }: Props) {
   const bg = SEVERITY_BG_COLORS[alert.severity];
   const ts = new Date(alert.timestamp);
-  const timeLabel = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const dateLabel = ts.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  const timeLabel = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
 
   return (
     <Pressable
@@ -22,7 +23,7 @@ export function AlertCard({ alert, onPress }: Props) {
       <View style={styles.header}>
         <SeverityBadge severity={alert.severity} size="sm" />
         <Text style={styles.region}>{alert.region}</Text>
-        <Text style={styles.time}>{timeLabel}</Text>
+        <Text style={styles.time}>{dateLabel} · {timeLabel} UTC</Text>
       </View>
       <Text style={styles.summary} numberOfLines={3}>
         {alert.summary}

@@ -1,14 +1,8 @@
 /**
- * Query screen — journalist submits a free-text or voice question
- * about a selected watch zone.
+ * Query screen — journalist submits a free-text or voice question.
  *
- * Features:
- * - Region dropdown (9 watch zones)
- * - Free text input
- * - Hold-to-record voice button (useAudio hook)
- * - LoadingOverlay with "Searching for current intelligence…" (queries take 1-2 min)
- * - Response: severity badge + answer text + citations
- * - was_sanitised disclosure when backend modified input
+ * Region defaults to the watch zone from Settings but can be changed
+ * for a one-off query via the dropdown — it never writes back to the store.
  */
 
 import React, { useState } from 'react';
@@ -18,9 +12,11 @@ import {
   TextInput,
   Pressable,
   ScrollView,
+  Modal,
   StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { SeverityBadge } from '../../components/SeverityBadge';
 import { CitationList } from '../../components/CitationList';
 import { LoadingOverlay } from '../../components/LoadingOverlay';
@@ -31,8 +27,11 @@ import { WATCH_ZONES } from '../../constants/watchZones';
 import type { QueryResponse } from '../../types/api';
 
 export default function QueryScreen() {
+  const watchZone = useSettingsStore((s) => s.watchZone);
   const language = useSettingsStore((s) => s.language);
-  const [region, setRegion] = useState<string>(WATCH_ZONES[0]);
+
+  const [region, setRegion] = useState(watchZone);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<QueryResponse | null>(null);
@@ -61,31 +60,22 @@ export default function QueryScreen() {
     }
   };
 
-  const handleVoiceRelease = async () => {
-    await stopRecording();
-    // audioUri is now set — user can review then tap submit
-  };
-
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <Text style={styles.title}>Intelligence Query</Text>
 
-        {/* Region selector */}
-        <Text style={styles.label}>Watch Zone</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow}>
-          {WATCH_ZONES.map((z) => (
-            <Pressable
-              key={z}
-              onPress={() => setRegion(z)}
-              style={[styles.chip, region === z && styles.chipActive]}
-            >
-              <Text style={[styles.chipText, region === z && styles.chipTextActive]}>{z}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+        {/* Region dropdown */}
+        <Text style={styles.label}>Region</Text>
+        <Pressable
+          onPress={() => setDropdownOpen(true)}
+          style={styles.dropdownBtn}
+        >
+          <Text style={styles.dropdownValue}>{region}</Text>
+          <Ionicons name="chevron-down" size={18} color="#6b7280" />
+        </Pressable>
 
-        {/* Text input */}
+        {/* Question input */}
         <Text style={styles.label}>Question</Text>
         <TextInput
           style={styles.input}
@@ -100,7 +90,7 @@ export default function QueryScreen() {
         {/* Voice button */}
         <Pressable
           onPressIn={startRecording}
-          onPressOut={handleVoiceRelease}
+          onPressOut={() => stopRecording()}
           style={[styles.voiceBtn, isRecording && styles.voiceBtnActive]}
         >
           <Text style={styles.voiceBtnText}>
@@ -130,10 +120,8 @@ export default function QueryScreen() {
           <Text style={styles.submitText}>Submit</Text>
         </Pressable>
 
-        {/* Error */}
         {error && <Text style={styles.error}>{error}</Text>}
 
-        {/* Result */}
         {result && (
           <View style={styles.result}>
             <SeverityBadge severity={result.severity} />
@@ -151,6 +139,34 @@ export default function QueryScreen() {
       {loading && (
         <LoadingOverlay message="Searching for current intelligence... this may take a moment." />
       )}
+
+      {/* Region picker modal */}
+      <Modal
+        visible={dropdownOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDropdownOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setDropdownOpen(false)}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>Select Region</Text>
+            {WATCH_ZONES.map((zone) => (
+              <Pressable
+                key={zone}
+                onPress={() => { setRegion(zone); setDropdownOpen(false); }}
+                style={[styles.modalItem, region === zone && styles.modalItemActive]}
+              >
+                <Text style={[styles.modalItemText, region === zone && styles.modalItemTextActive]}>
+                  {zone}
+                </Text>
+                {region === zone && (
+                  <Ionicons name="checkmark" size={18} color="#1d4ed8" />
+                )}
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -158,21 +174,22 @@ export default function QueryScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9fafb' },
   scroll: { padding: 16 },
-  title: { fontSize: 22, fontWeight: '700', color: '#111827', marginBottom: 16 },
+  title: { fontSize: 22, fontWeight: '700', color: '#111827', marginBottom: 4 },
   label: { fontSize: 13, fontWeight: '600', color: '#374151', marginBottom: 6, marginTop: 12 },
-  chipRow: { marginBottom: 4 },
-  chip: {
+
+  dropdownBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#fff',
     borderWidth: 1,
     borderColor: '#d1d5db',
-    borderRadius: 20,
+    borderRadius: 8,
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginRight: 8,
-    backgroundColor: '#fff',
+    paddingVertical: 11,
   },
-  chipActive: { borderColor: '#2563eb', backgroundColor: '#eff6ff' },
-  chipText: { fontSize: 13, color: '#374151' },
-  chipTextActive: { color: '#2563eb', fontWeight: '600' },
+  dropdownValue: { fontSize: 14, color: '#111827', fontWeight: '500' },
+
   input: {
     backgroundColor: '#fff',
     borderWidth: 1,
@@ -228,4 +245,42 @@ const styles = StyleSheet.create({
   },
   sanitisedNote: { fontSize: 12, color: '#d97706', fontStyle: 'italic' },
   answer: { fontSize: 15, color: '#111827', lineHeight: 22 },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    padding: 32,
+  },
+  modalSheet: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    paddingVertical: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  modalTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#6b7280',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  modalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    borderTopWidth: 1,
+    borderTopColor: '#f3f4f6',
+  },
+  modalItemActive: { backgroundColor: '#eff6ff' },
+  modalItemText: { fontSize: 15, color: '#111827' },
+  modalItemTextActive: { color: '#1d4ed8', fontWeight: '600' },
 });

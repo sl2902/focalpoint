@@ -1,71 +1,93 @@
-/**
- * Feed screen — proactive severity-graded alert stream.
- *
- * Features:
- * - FlatList of AlertCard components for all 9 watch zones
- * - Pull-to-refresh
- * - CachedBanner when offline or data is stale
- * - Tap card → AlertDetail modal (passes region + timestamp, not full JSON)
- */
-
 import React from 'react';
 import {
   FlatList,
   RefreshControl,
   View,
   Text,
+  Pressable,
   StyleSheet,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AlertCard } from '../../components/AlertCard';
-import { CachedBanner } from '../../components/CachedBanner';
-import { useAlerts } from '../../hooks/useAlerts';
+import { AlertCardSkeleton } from '../../components/AlertCardSkeleton';
+import { useAlerts, RegionEntry } from '../../hooks/useAlerts';
+import type { DaysOption } from '../../store/useSettingsStore';
 import type { AlertResponse } from '../../types/api';
+
+const DAYS_OPTIONS: DaysOption[] = [1, 3, 7, 14, 30];
+const DAYS_LABELS: Record<number, string> = {
+  1: '1d', 3: '3d', 7: '7d', 14: '14d', 30: '30d',
+};
 
 export default function FeedScreen() {
   const router = useRouter();
-  const { alerts, loading, error, stale, lastFetchedAt, refresh } = useAlerts();
+  const { entries, days, setDays, refresh, refreshing } = useAlerts();
 
   const handlePress = (alert: AlertResponse) => {
     router.push({
       pathname: '/alert/[id]',
-      params: { id: alert.region, region: alert.region, timestamp: alert.timestamp },
+      params: { id: alert.region, data: JSON.stringify(alert) },
     });
+  };
+
+  const renderEntry = ({ item }: { item: RegionEntry }) => {
+    if (item.status === 'loading' && !item.alert) {
+      return <AlertCardSkeleton />;
+    }
+    if (item.status === 'error' && !item.alert) {
+      return (
+        <View style={styles.errorRow}>
+          <Text style={styles.errorRegion}>{item.region}</Text>
+          <Text style={styles.errorMsg}>Could not load — pull to retry</Text>
+        </View>
+      );
+    }
+    return (
+      <AlertCard
+        alert={item.alert!}
+        onPress={() => handlePress(item.alert!)}
+      />
+    );
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>FocalPoint</Text>
-        <Text style={styles.subtitle}>Conflict Intelligence Feed</Text>
+        <View>
+          <Text style={styles.title}>FocalPoint</Text>
+          <Text style={styles.subtitle}>Conflict Intelligence Feed</Text>
+        </View>
       </View>
 
-      {stale && <CachedBanner lastFetchedAt={lastFetchedAt} />}
-
-      {error && (
-        <View style={styles.errorBanner}>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      )}
+      {/* Days segmented control */}
+      <View style={styles.segmentBar}>
+        {DAYS_OPTIONS.map((d) => (
+          <Pressable
+            key={d}
+            onPress={() => setDays(d)}
+            style={[styles.segment, days === d && styles.segmentActive]}
+          >
+            <Text style={[styles.segmentText, days === d && styles.segmentTextActive]}>
+              {DAYS_LABELS[d]}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
 
       <FlatList
-        data={alerts}
-        keyExtractor={(item, i) => `${item.region}-${item.timestamp}-${i}`}
-        renderItem={({ item }) => (
-          <AlertCard alert={item} onPress={() => handlePress(item)} />
-        )}
+        data={entries}
+        keyExtractor={(item) => item.region}
+        renderItem={renderEntry}
         refreshControl={
-          <RefreshControl refreshing={loading} onRefresh={refresh} tintColor="#2563eb" />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={refresh}
+            tintColor="#2563eb"
+          />
         }
         contentContainerStyle={styles.list}
-        ListEmptyComponent={
-          !loading ? (
-            <View style={styles.empty}>
-              <Text style={styles.emptyText}>No alerts available.</Text>
-            </View>
-          ) : null
-        }
       />
     </SafeAreaView>
   );
@@ -73,6 +95,7 @@ export default function FeedScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9fafb' },
+
   header: {
     paddingHorizontal: 16,
     paddingTop: 8,
@@ -83,15 +106,46 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 22, fontWeight: '700', color: '#111827' },
   subtitle: { fontSize: 13, color: '#6b7280', marginTop: 2 },
-  errorBanner: {
-    backgroundColor: '#fef2f2',
+
+  segmentBar: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 10,
+    gap: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#fecaca',
+    borderBottomColor: '#e5e7eb',
   },
-  errorText: { fontSize: 13, color: '#dc2626' },
+  segment: {
+    flex: 1,
+    paddingVertical: 6,
+    borderRadius: 6,
+    alignItems: 'center',
+    backgroundColor: '#f3f4f6',
+  },
+  segmentActive: {
+    backgroundColor: '#1d4ed8',
+  },
+  segmentText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#6b7280',
+  },
+  segmentTextActive: {
+    color: '#fff',
+  },
+
   list: { paddingVertical: 8 },
-  empty: { alignItems: 'center', marginTop: 60 },
-  emptyText: { fontSize: 15, color: '#9ca3af' },
+
+  errorRow: {
+    marginHorizontal: 16,
+    marginVertical: 6,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#fee2e2',
+  },
+  errorRegion: { fontSize: 14, fontWeight: '600', color: '#374151', marginBottom: 2 },
+  errorMsg: { fontSize: 12, color: '#ef4444' },
 });
