@@ -56,7 +56,7 @@ export default function AlertDetailScreen() {
     setRefreshing(true);
     setRefreshError(false);
     try {
-      const fresh = await fetchAlertForRegion(alert.region, days);
+      const fresh = await fetchAlertForRegion(alert.region, days, true);
       await upsertAlert(fresh, days);
       setAlert(fresh);
     } catch {

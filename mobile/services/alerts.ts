@@ -10,14 +10,20 @@ export async function fetchFeed(): Promise<AlertResponse[]> {
 }
 
 /**
- * Trigger a live assessment for a single region.
- * This is the only path that may invoke Gemma 4.
+ * Fetch an alert for a single region.
+ *
+ * force=true  — bypasses all server-side caches (SQLite TTL + Redis) and
+ *               always runs a fresh GDELT + Gemma 4 pipeline. Used by the
+ *               Alert Detail Refresh button.
+ * force=false — uses the backend SQLite cache when fresh; only runs the
+ *               live pipeline on a cache miss. Used by the feed Load button.
  */
 export async function fetchAlertForRegion(
   region: string,
   days: number,
+  force = false,
 ): Promise<AlertResponse> {
   return apiGet<AlertResponse>(`/alerts/${encodeURIComponent(region)}`, {
-    params: { days },
+    params: { days, ...(force && { force: true }) },
   });
 }

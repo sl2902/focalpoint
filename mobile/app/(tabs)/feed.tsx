@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   FlatList,
   RefreshControl,
@@ -10,7 +10,11 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AlertCard } from '../../components/AlertCard';
+import { EmptyRegionCard } from '../../components/EmptyRegionCard';
 import { useAlerts } from '../../hooks/useAlerts';
+import { fetchAlertForRegion } from '../../services/alerts';
+import { upsertAlert } from '../../services/cache';
+import { WATCH_ZONES } from '../../constants/watchZones';
 import type { DaysOption } from '../../store/useSettingsStore';
 import type { AlertResponse } from '../../types/api';
 
@@ -19,9 +23,24 @@ const DAYS_LABELS: Record<number, string> = {
   1: '1d', 3: '3d', 7: '7d', 14: '14d', 30: '30d',
 };
 
+type FeedItem =
+  | { type: 'alert'; data: AlertResponse }
+  | { type: 'empty'; region: string };
+
 export default function FeedScreen() {
   const router = useRouter();
-  const { alerts, days, setDays, refresh, refreshing } = useAlerts();
+  const { alerts, days, setDays, refresh, refreshing, revalidate } = useAlerts();
+  const [loadingRegion, setLoadingRegion] = useState<string | null>(null);
+
+  // Regions that have no cached alert for the current days window.
+  const loadedSet = new Set(alerts.map((a) => a.region));
+  const feedItems: FeedItem[] = [
+    ...alerts.map((a) => ({ type: 'alert' as const, data: a })),
+    ...WATCH_ZONES.filter((z) => !loadedSet.has(z)).map((z) => ({
+      type: 'empty' as const,
+      region: z,
+    })),
+  ];
 
   const handlePress = (alert: AlertResponse) => {
     router.push({
@@ -30,7 +49,41 @@ export default function FeedScreen() {
     });
   };
 
-  const isEmpty = alerts.length === 0 && !refreshing;
+  const handleLoad = useCallback(async (region: string) => {
+    if (loadingRegion) return;
+    setLoadingRegion(region);
+    try {
+      const fresh = await fetchAlertForRegion(region, days);
+      await upsertAlert(fresh, fresh.days ?? days);
+      revalidate();
+    } catch {
+      // Card stays empty — user can retry.
+    } finally {
+      setLoadingRegion(null);
+    }
+  }, [loadingRegion, days, revalidate]);
+
+  const renderItem = ({ item }: { item: FeedItem }) => {
+    if (item.type === 'alert') {
+      return (
+        <AlertCard
+          alert={item.data}
+          onPress={() => handlePress(item.data)}
+        />
+      );
+    }
+    return (
+      <EmptyRegionCard
+        region={item.region}
+        days={days}
+        onLoad={() => handleLoad(item.region)}
+        loading={loadingRegion === item.region}
+        disabled={loadingRegion !== null && loadingRegion !== item.region}
+      />
+    );
+  };
+
+  const isEmpty = feedItems.length === 0 && !refreshing;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -58,11 +111,11 @@ export default function FeedScreen() {
       </View>
 
       <FlatList
-        data={alerts}
-        keyExtractor={(item) => item.region}
-        renderItem={({ item }) => (
-          <AlertCard alert={item} onPress={() => handlePress(item)} />
-        )}
+        data={feedItems}
+        keyExtractor={(item) =>
+          item.type === 'alert' ? item.data.region : `empty:${item.region}`
+        }
+        renderItem={renderItem}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

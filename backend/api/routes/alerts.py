@@ -84,18 +84,30 @@ async def get_region_alerts(
     request: Request,
     region: str = Path(min_length=2, max_length=100),
     days: DaysQuery = 7,
+    force: bool = Query(default=False),
     db_path: str = Depends(get_alerts_db_path),
     gdelt_cloud: GdeltCloudConnector = Depends(get_gdelt_cloud_connector),
     gdelt: GdeltConnector = Depends(get_gdelt_connector),
     cpj: CPJConnector = Depends(get_cpj_connector),
     generator: AlertGenerator = Depends(get_alert_generator),
 ) -> AlertResponse:
-    """Return the latest severity alert for a named region."""
-    cached = await store.get_cached_alert(db_path, region.title(), days=days)
-    if cached is not None:
-        logger.info(f"alerts: cache hit for region={region.title()!r} days={days} — skipping Gemma 4")
-        return cached
-    logger.info(f"alerts: cache miss for region={region.title()!r} days={days} — running live pipeline")
+    """Return the latest severity alert for a named region.
+
+    force=true skips both the SQLite TTL check and the Redis connector
+    caches, guaranteeing a fresh GDELT + Gemma 4 pipeline run.
+    """
+    if not force:
+        cached = await store.get_cached_alert(db_path, region.title(), days=days)
+        if cached is not None:
+            logger.info(f"alerts: cache hit for region={region.title()!r} days={days} — skipping Gemma 4")
+            return cached
+        logger.info(f"alerts: cache miss for region={region.title()!r} days={days} — running live pipeline")
+    else:
+        logger.info(f"alerts: force refresh for region={region.title()!r} days={days} — bypassing all caches")
+        # Bypass Redis by constructing connector instances without a client.
+        gdelt_cloud = GdeltCloudConnector(redis_client=None)
+        gdelt = GdeltConnector(redis_client=None)
+
     return await _build_alert(
         region=region,
         days=days,

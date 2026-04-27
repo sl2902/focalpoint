@@ -28,6 +28,7 @@ interface UseAlertsResult {
   setDays: (d: DaysOption) => Promise<void>;
   refresh: () => void;
   refreshing: boolean;
+  revalidate: () => void; // silent re-read of SQLite, no spinner
 }
 
 export function useAlerts(): UseAlertsResult {
@@ -79,6 +80,10 @@ export function useAlerts(): UseAlertsResult {
     }, []),
   );
 
+  const revalidate = useCallback(() => {
+    setVersion((v) => v + 1);
+  }, []);
+
   // Pull-to-refresh: bump version to re-read SQLite. No network call.
   const refresh = useCallback(() => {
     if (refreshing) return;
@@ -90,5 +95,5 @@ export function useAlerts(): UseAlertsResult {
     setTimeout(() => setRefreshing(false), 300);
   }, [refreshing]);
 
-  return { alerts, days, setDays, refresh, refreshing };
+  return { alerts, days, setDays, refresh, refreshing, revalidate };
 }

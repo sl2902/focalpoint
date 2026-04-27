@@ -33,6 +33,11 @@ async def refresh_one_watch_zone(app) -> None:  # noqa: ANN001
     _rotation_index += 1
     logger.info(f"scheduler: refreshing {region!r}")
 
+    cached = await store.get_cached_alert(app.state.db_path, region, days=1)
+    if cached is not None:
+        logger.info(f"scheduler: {region!r} days=1 still fresh — skipping Gemma and GDELT")
+        return
+
     redis_client = getattr(app.state, "redis", None)
     gdelt_cloud = GdeltCloudConnector(redis_client=redis_client)
     gdelt = GdeltConnector(redis_client=redis_client)
