@@ -1190,3 +1190,113 @@ class TestGemmaClientSemaphore:
         finally:
             _GEMMA_SEM.release()
             _GEMMA_SEM.release()
+
+
+# ---------------------------------------------------------------------------
+# GemmaClient grounding URL replacement — vertexaisearch redirect fix
+# ---------------------------------------------------------------------------
+
+_VERTEX_URL = (
+    "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQG_fake"
+)
+_REAL_URL = "https://osce.org/ukraine-journalist-safety-2026"
+
+
+def _vertex_alert_dict(**overrides) -> dict:
+    """Alert dict with a vertexaisearch redirect URL as the citation id."""
+    base = _valid_alert_dict(
+        source_citations=[{"id": _VERTEX_URL, "description": "OSCE Ukraine safety report"}]
+    )
+    base.update(overrides)
+    return base
+
+
+def _real_url_alert_dict(**overrides) -> dict:
+    """Alert dict with a real publisher URL as the citation id."""
+    base = _valid_alert_dict(
+        source_citations=[{"id": _REAL_URL, "description": "OSCE Ukraine safety report"}]
+    )
+    base.update(overrides)
+    return base
+
+
+class TestGemmaClientGroundingUrlReplacement:
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_vertexaisearch_urls_trigger_restructuring(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """When use_web_search=True and citations contain vertexaisearch redirect URLs,
+        _structure_web_response must be called to replace them with real publisher URLs."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            _vertex_alert_dict()
+        )
+        mock_extract_urls.return_value = [(_REAL_URL, "OSCE Ukraine safety report")]
+
+        client = GemmaClient(api_key="fake-key")
+        structured = AlertOutput.model_validate(_real_url_alert_dict())
+        with patch.object(client, "_structure_web_response", return_value=structured) as mock_struct:
+            result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        mock_struct.assert_called_once()
+        assert result.source_citations[0].id == _REAL_URL
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_real_publisher_urls_skip_restructuring(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """When citations already have real publisher URLs, no restructuring is needed."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            _real_url_alert_dict()
+        )
+        mock_extract_urls.return_value = [(_REAL_URL, "OSCE Ukraine safety report")]
+
+        client = GemmaClient(api_key="fake-key")
+        with patch.object(client, "_structure_web_response") as mock_struct:
+            result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        mock_struct.assert_not_called()
+        assert result.source_citations[0].id == _REAL_URL
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_vertexaisearch_urls_not_replaced_when_web_search_false(
+        self, mock_client_cls
+    ) -> None:
+        """Without web search there is no grounding metadata — vertexaisearch URLs
+        in citations must not trigger _structure_web_response."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            _vertex_alert_dict()
+        )
+
+        client = GemmaClient(api_key="fake-key")
+        with patch.object(client, "_structure_web_response") as mock_struct:
+            client.generate_alert("prompt", _REGION, use_web_search=False)
+
+        mock_struct.assert_not_called()
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_no_restructuring_when_grounding_urls_empty(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """When web search is active but grounding metadata returns no real URLs,
+        _structure_web_response must not be called (nothing to replace with)."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            _vertex_alert_dict()
+        )
+        mock_extract_urls.return_value = []  # no real URLs in grounding metadata
+
+        client = GemmaClient(api_key="fake-key")
+        with patch.object(client, "_structure_web_response") as mock_struct:
+            client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        mock_struct.assert_not_called()
