@@ -190,20 +190,71 @@ historical-source identifier.
 ## Layer 5 — Mobile (mobile/)
 
 Expo React Native app. Never calls data APIs directly.
-All data comes from FastAPI backend.
+All data comes from FastAPI backend or Expo SQLite local cache.
 
 On-device Gemma 4 (E2B/E4B):
 - Handles queries when connectivity is limited
 - Uses cached local data from Expo SQLite
 - Smaller context window — max 10 GDELT Cloud events + 5 GDELT Doc API articles
 
-Screens:
-- Feed: proactive severity-graded alert stream
-- Map: MapLibre React Native map with incident markers (OpenStreetMap tiles, no key)
-- AlertDetail: full alert with source citations
-- Explore: browse any region outside watch zone
-- Settings: watch zone, language, notification preferences,
-            discreet mode toggle
+### Screens
+
+**Feed** (`app/(tabs)/feed.tsx`)
+Proactive severity-graded alert stream. Shows one card per watch zone:
+- `AlertCard` — valid assessment with severity badge, summary, confidence bar
+- `FallbackCard` — failed Gemma call; shows a refresh button to retry on demand
+- `EmptyRegionCard` — no cached data; load button triggers a live backend fetch
+Time window (`days`) is read from `useSettingsStore` — the feed has no days
+control of its own; Settings is the single source of truth for the time window.
+
+**Map** (`app/(tabs)/map.tsx`)
+Shows one marker per watch zone (all 9 regions), coloured by severity.
+- Reads `days` from Zustand (`useSettingsStore`) — re-queries SQLite when it changes
+- Re-reads SQLite on tab focus via `useFocusEffect` + version counter
+- Fallback alerts (failed Gemma calls) render as grey (`INSUFFICIENT_DATA`) markers
+- CRITICAL markers pulse with an animated ring (CSS keyframes on web,
+  `Animated.loop` on native)
+- **Web** (`MapView.web.tsx`): Leaflet + CartoDB dark tiles inside an `<iframe>`.
+  `leaflet.markercluster` groups nearby markers; cluster icon colour reflects the
+  highest severity among its children. Clicking a marker opens a dark popup
+  (severity badge, UTC timestamp, 100-char summary, confidence %) with a
+  "View Full Assessment →" button that posts a message to the parent frame,
+  triggering navigation to AlertDetail.
+- **Native** (`MapView.native.tsx`): MapLibre React Native + OpenStreetMap demo
+  tiles. Tapping a marker opens a bottom-sheet preview overlay (region name +
+  severity badge + "View Details →" button). Grey markers show a brief toast
+  ("No data — set as Watch Zone in Settings to load").
+- Severity legend overlaid bottom-right (Safe / Elevated / Active / Critical / No data).
+
+**AlertDetail** (`app/alert/[id].tsx`)
+Full alert view passed via router params.
+- Confidence bar: green ≥ 90 %, amber 70–89 %, red < 70 %
+- `[Note: …]` contextual annotations stripped from summary body and rendered
+  separately as small italic text below the summary
+- Source citations capped at 5; overflow shown as "and N more sources"
+
+**Settings** (`app/(tabs)/settings.tsx`)
+- Time window picker (1 / 3 / 7 / 14 / 30 days) — writes to `useSettingsStore`;
+  feed and map re-query automatically on change
+- Watch Zone selector
+- DATA SOURCES section: non-interactive list of active data sources
+  (GDELT Cloud, GDELT Doc API, CPJ, RSF Press Freedom Index) with icons
+- ABOUT section: version and one-line description
+
+### State management
+
+`useSettingsStore` (Zustand, persisted via `expo-secure-store`):
+- `days` — time window shared by Feed, Map, and all cache queries
+- `watchZone` — journalist's pinned region
+
+`useRefreshStore` (Zustand, ephemeral):
+- `refreshingRegion` — tracks which region a background refresh is running,
+  used to disable other load buttons and show a spinner on FallbackCard
+
+SQLite (`services/cache.ts`):
+- Promise-based singleton `_dbPromise` prevents init races on cold start
+- `getLatestAlertsByDays(days)` — split two-query approach (subquery binding
+  bug in expo-sqlite means `?` inside a subquery WHERE gets NULL)
 
 ## Model Routing Logic
 
