@@ -70,6 +70,16 @@ passes it to both `prompt_builder` and `gemma_client`:
   type constraint — the two are incompatible). Gemma finds and cites live
   sources automatically; returned URLs pass the existing citation validator.
 
+**Grounding URL replacement:** The Gemini API grounding tool embeds internal
+`vertexaisearch.cloud.google.com` redirect URLs in the model's citations.
+These expire quickly and are not useful to users. After parsing the model's
+JSON response, `gemma_client` inspects `source_citations`: if any citation ID
+contains `vertexaisearch.cloud.google.com`, the real publisher URLs are
+extracted from `response.candidates[0].grounding_metadata.grounding_chunks`
+and `_structure_web_response` is called to rebuild the citations using those
+permanent URLs. This adds one extra Gemma API call but ensures citations link
+to actual sources (Reuters, OSCE, etc.).
+
 ### Prompt structure
 
 Standard (GDELT data available):
@@ -231,9 +241,13 @@ Mobile: Expo
 5. Alert generator determines `use_web_search`: True if GDELT Doc API returned no
    articles or aggregate_tone == 0.0
 6. Alert generator builds grounded prompt (with or without `[WEB SEARCH AVAILABLE]`
-   block) and calls Gemma 4 26B; web search mode uses Google Search grounding tool
+   block) and calls Gemma 4 26B; web search mode uses Google Search grounding tool.
+   `threading.BoundedSemaphore(2)` in `gemma_client` limits concurrent Gemma calls;
+   a third caller waits up to 30 s then receives `TimeoutError`.
 7. Output validated by Pydantic AlertOutput schema (empty citations permitted only
-   for INSUFFICIENT_DATA severity)
+   for INSUFFICIENT_DATA severity). If web search was active and citations contain
+   vertexaisearch redirect URLs, a second structured call replaces them with real
+   publisher URLs from grounding metadata.
 8. Maximum severity rule applied: final severity = max(gemma_severity, scorer_severity)
    using SEVERITY_ORDER (INSUFFICIENT_DATA=-1, GREEN=0, AMBER=1, RED=2, CRITICAL=3);
    if Gemma is higher an elevation note is appended to the summary

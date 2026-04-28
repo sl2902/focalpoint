@@ -102,6 +102,15 @@ Authorization: Bearer {GDELT_CLOUD_API_KEY}
 
 **Free tier:** 100 queries/month. Cache aggressively — see caching.md.
 
+**Rate limit / error handling:**
+- HTTP 429: logged as warning, returns empty event list (no exception propagated).
+  The 8-hour Redis TTL means genuine 429s in production are rare; this guard exists
+  for burst scenarios (e.g. scheduler restarting mid-cycle).
+- HTTP 4xx/5xx (non-429): exception propagates to the caller.
+- `asyncio.Semaphore(1)` at module level serialises concurrent calls. If a second
+  request arrives while one is in flight, it queues silently (a warning is logged).
+  This prevents simultaneous quota consumption during scheduler start-up.
+
 **Pydantic model:** `backend/ingestion/gdeltcloud_connector.py` → `GdeltCloudEvent`
 (with nested `GdeltCloudGeo`, `GdeltCloudActor`, `GdeltCloudMetrics`)
 
@@ -174,6 +183,14 @@ FocalPoint uses maxrecords=10 for on-device, maxrecords=20 for backend.
 - Score < -5: Hostile/dangerous media environment
 - Score -5 to 0: Negative but normal conflict coverage
 - Score > 0: Unusually positive (rare in conflict zones)
+
+**Rate limit / error handling:**
+- HTTP 429: logged as warning, returns empty `GdeltResponse` immediately — the retry
+  loop is skipped entirely (retrying a 429 would only worsen rate limiting).
+- Other HTTP errors / timeouts: up to 3 retries with 2-second back-off, then empty
+  `GdeltResponse`.
+- `asyncio.Semaphore(1)` at module level serialises concurrent calls. A warning is
+  logged when a request must wait for the in-flight call to complete.
 
 **Pydantic model:** backend/ingestion/gdelt_connector.py → GdeltArticle
 
