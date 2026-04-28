@@ -66,16 +66,24 @@ function CitationRow({ citation, isLast }: { citation: Citation; isLast: boolean
   );
 }
 
+const MAX_CITATIONS = 5;
+
 export function CitationList({ citations }: Props) {
   const visible = citations.filter((c) => !c.id.startsWith('FALLBACK'));
   if (visible.length === 0) return null;
 
+  const shown = visible.slice(0, MAX_CITATIONS);
+  const overflow = visible.length - shown.length;
+
   return (
     <View style={styles.container}>
       <Text style={styles.heading}>Sources</Text>
-      {visible.map((c, i) => (
-        <CitationRow key={c.id + i} citation={c} isLast={i === visible.length - 1} />
+      {shown.map((c, i) => (
+        <CitationRow key={c.id + i} citation={c} isLast={i === shown.length - 1 && overflow === 0} />
       ))}
+      {overflow > 0 && (
+        <Text style={styles.overflow}>and {overflow} more source{overflow === 1 ? '' : 's'}</Text>
+      )}
     </View>
   );
 }
@@ -119,4 +127,10 @@ const styles = StyleSheet.create({
     marginLeft: 24,
   },
   pressed: { opacity: 0.7 },
+  overflow: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginTop: 8,
+    marginLeft: 24,
+  },
 });

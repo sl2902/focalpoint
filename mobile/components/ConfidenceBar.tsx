@@ -7,7 +7,7 @@ interface Props {
 
 export function ConfidenceBar({ confidence }: Props) {
   const pct = Math.round(confidence * 100);
-  const color = pct >= 70 ? '#22c55e' : pct >= 40 ? '#f59e0b' : '#ef4444';
+  const color = pct >= 90 ? '#22c55e' : pct >= 70 ? '#f59e0b' : '#ef4444';
 
   return (
     <View style={styles.container}>

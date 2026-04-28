@@ -6,4 +6,8 @@ export interface ComponentMarker {
   longitude: number;
   severity: Severity;
   region: string;
+  // Populated from valid (non-fallback) alert data for richer map popups.
+  timestamp?: string;
+  summary?: string;
+  confidence?: number;
 }

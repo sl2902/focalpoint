@@ -34,6 +34,7 @@ import type { AlertResponse } from '../../types/api';
 
 const ELEVATION_PATTERN = /\[Elevation note:[^\]]+\]/i;
 const FLOOR_PATTERN = /\[Historical risk floor applied[^\]]*\]/i;
+const CONTEXTUAL_NOTE_PATTERN = /\[Note:[^\]]+\]/i;
 
 export default function AlertDetailScreen() {
   const { data } = useLocalSearchParams<{ id: string; data: string }>();
@@ -89,9 +90,11 @@ export default function AlertDetailScreen() {
   const alertIsFallback = isFallback(alert);
   const elevationMatch = alert.summary.match(ELEVATION_PATTERN);
   const floorMatch = alert.summary.match(FLOOR_PATTERN);
+  const contextualNoteMatch = alert.summary.match(CONTEXTUAL_NOTE_PATTERN);
   const cleanSummary = alert.summary
     .replace(ELEVATION_PATTERN, '')
     .replace(FLOOR_PATTERN, '')
+    .replace(CONTEXTUAL_NOTE_PATTERN, '')
     .trim();
 
   const fetchedAt = new Date(alert.timestamp);
@@ -128,6 +131,11 @@ export default function AlertDetailScreen() {
               <ElevationNote note={elevationMatch[0].replace(/^\[|\]$/g, '')} />
             )}
             <Text style={styles.summary}>{cleanSummary}</Text>
+            {contextualNoteMatch && (
+              <Text style={styles.contextualNote}>
+                {contextualNoteMatch[0].replace(/^\[|\]$/g, '')}
+              </Text>
+            )}
             <CitationList citations={alert.source_citations} />
           </>
         )}
@@ -192,6 +200,13 @@ const styles = StyleSheet.create({
     color: '#111827',
     lineHeight: 23,
     marginTop: 14,
+  },
+  contextualNote: {
+    fontSize: 12,
+    color: '#6b7280',
+    fontStyle: 'italic',
+    marginTop: 6,
+    lineHeight: 18,
   },
 
   fallbackBanner: {

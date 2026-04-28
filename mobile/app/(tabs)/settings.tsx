@@ -21,10 +21,18 @@ import {
   StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { useSettingsStore, type DaysOption } from '../../store/useSettingsStore';
 import { useDiscreetStore } from '../../store/useDiscreetStore';
 import { WATCH_ZONES, type WatchZone } from '../../constants/watchZones';
 import { LANGUAGES } from '../../constants/languages';
+
+const DATA_SOURCES = [
+  { icon: 'flash-outline' as const,         label: 'GDELT Cloud',           detail: 'Conflict events' },
+  { icon: 'newspaper-outline' as const,     label: 'GDELT Doc API',         detail: 'Media sentiment' },
+  { icon: 'people-outline' as const,        label: 'CPJ',                   detail: 'Journalist incidents' },
+  { icon: 'shield-outline' as const,        label: 'RSF Press Freedom',     detail: 'Press freedom index' },
+];
 
 const DAYS_OPTIONS: { label: string; value: DaysOption }[] = [
   { label: 'Last 24 hours', value: 1 },
@@ -136,6 +144,41 @@ export default function SettingsScreen() {
             trackColor={{ true: '#2563eb' }}
           />
         </View>
+
+        {/* Data Sources */}
+        <Text style={styles.sectionHeader}>Data Sources</Text>
+        <View style={styles.listCard}>
+          {DATA_SOURCES.map((src, i) => (
+            <React.Fragment key={src.label}>
+              <View style={styles.dataSourceRow}>
+                <View style={styles.dataSourceIcon}>
+                  <Ionicons name={src.icon} size={16} color="#6b7280" />
+                </View>
+                <View style={styles.dataSourceText}>
+                  <Text style={styles.dataSourceLabel}>{src.label}</Text>
+                  <Text style={styles.dataSourceDetail}>{src.detail}</Text>
+                </View>
+              </View>
+              {i < DATA_SOURCES.length - 1 && <View style={styles.listDivider} />}
+            </React.Fragment>
+          ))}
+        </View>
+
+        {/* About */}
+        <Text style={styles.sectionHeader}>About</Text>
+        <View style={styles.listCard}>
+          <View style={styles.aboutRow}>
+            <Ionicons name="information-circle-outline" size={18} color="#6b7280" />
+            <View style={styles.aboutText}>
+              <Text style={styles.aboutVersion}>FocalPoint v1.0</Text>
+              <Text style={styles.aboutDescription}>
+                Real-time conflict intelligence for field journalists.
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.bottomSpacer} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -213,4 +256,48 @@ const styles = StyleSheet.create({
   },
   toggleLabel: { fontSize: 15, fontWeight: '600', color: '#111827' },
   toggleSub: { fontSize: 12, color: '#9ca3af', marginTop: 2 },
+
+  listCard: {
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    overflow: 'hidden',
+  },
+  listDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: '#f3f4f6',
+    marginLeft: 44,
+  },
+
+  dataSourceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  dataSourceIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: '#f3f4f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dataSourceText: { flex: 1 },
+  dataSourceLabel: { fontSize: 14, fontWeight: '600', color: '#111827' },
+  dataSourceDetail: { fontSize: 12, color: '#9ca3af', marginTop: 1 },
+
+  aboutRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 14,
+  },
+  aboutText: { flex: 1 },
+  aboutVersion: { fontSize: 14, fontWeight: '700', color: '#111827' },
+  aboutDescription: { fontSize: 13, color: '#6b7280', marginTop: 3, lineHeight: 18 },
+
+  bottomSpacer: { height: 24 },
 });

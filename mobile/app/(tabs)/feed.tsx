@@ -4,7 +4,6 @@ import {
   RefreshControl,
   View,
   Text,
-  Pressable,
   StyleSheet,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -17,10 +16,8 @@ import { fetchAlertForRegion } from '../../services/alerts';
 import { isFallback, upsertAlert } from '../../services/cache';
 import { WATCH_ZONES } from '../../constants/watchZones';
 import { useRefreshStore } from '../../store/useRefreshStore';
-import type { DaysOption } from '../../store/useSettingsStore';
 import type { AlertResponse } from '../../types/api';
 
-const DAYS_OPTIONS: DaysOption[] = [1, 3, 7, 14, 30];
 const DAYS_LABELS: Record<number, string> = {
   1: '1d', 3: '3d', 7: '7d', 14: '14d', 30: '30d',
 };
@@ -32,7 +29,7 @@ type FeedItem =
 
 export default function FeedScreen() {
   const router = useRouter();
-  const { alerts, days, setDays, refresh, refreshing, revalidate } = useAlerts();
+  const { alerts, days, refresh, refreshing, revalidate } = useAlerts();
   const { refreshingRegion } = useRefreshStore();
   const [loadingRegion, setLoadingRegion] = useState<string | null>(null);
 
@@ -114,21 +111,6 @@ export default function FeedScreen() {
         </View>
       </View>
 
-      {/* Days segmented control */}
-      <View style={styles.segmentBar}>
-        {DAYS_OPTIONS.map((d) => (
-          <Pressable
-            key={d}
-            onPress={() => setDays(d)}
-            style={[styles.segment, days === d && styles.segmentActive]}
-          >
-            <Text style={[styles.segmentText, days === d && styles.segmentTextActive]}>
-              {DAYS_LABELS[d]}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-
       <FlatList
         data={feedItems}
         keyExtractor={(item) => {
@@ -173,26 +155,6 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 22, fontWeight: '700', color: '#111827' },
   subtitle: { fontSize: 13, color: '#6b7280', marginTop: 2 },
-
-  segmentBar: {
-    flexDirection: 'row',
-    backgroundColor: '#fff',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    gap: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
-  },
-  segment: {
-    flex: 1,
-    paddingVertical: 6,
-    borderRadius: 6,
-    alignItems: 'center',
-    backgroundColor: '#f3f4f6',
-  },
-  segmentActive: { backgroundColor: '#1d4ed8' },
-  segmentText: { fontSize: 13, fontWeight: '600', color: '#6b7280' },
-  segmentTextActive: { color: '#fff' },
 
   list: { paddingVertical: 8 },
   listEmpty: { flex: 1 },
