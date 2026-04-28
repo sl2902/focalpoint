@@ -11,10 +11,12 @@ import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AlertCard } from '../../components/AlertCard';
 import { EmptyRegionCard } from '../../components/EmptyRegionCard';
+import { FallbackCard } from '../../components/FallbackCard';
 import { useAlerts } from '../../hooks/useAlerts';
 import { fetchAlertForRegion } from '../../services/alerts';
-import { upsertAlert } from '../../services/cache';
+import { isFallback, upsertAlert } from '../../services/cache';
 import { WATCH_ZONES } from '../../constants/watchZones';
+import { useRefreshStore } from '../../store/useRefreshStore';
 import type { DaysOption } from '../../store/useSettingsStore';
 import type { AlertResponse } from '../../types/api';
 
@@ -25,17 +27,22 @@ const DAYS_LABELS: Record<number, string> = {
 
 type FeedItem =
   | { type: 'alert'; data: AlertResponse }
+  | { type: 'fallback'; data: AlertResponse }
   | { type: 'empty'; region: string };
 
 export default function FeedScreen() {
   const router = useRouter();
   const { alerts, days, setDays, refresh, refreshing, revalidate } = useAlerts();
+  const { refreshingRegion } = useRefreshStore();
   const [loadingRegion, setLoadingRegion] = useState<string | null>(null);
 
   // Regions that have no cached alert for the current days window.
   const loadedSet = new Set(alerts.map((a) => a.region));
   const feedItems: FeedItem[] = [
-    ...alerts.map((a) => ({ type: 'alert' as const, data: a })),
+    ...alerts.map((a) => ({
+      type: isFallback(a) ? ('fallback' as const) : ('alert' as const),
+      data: a,
+    })),
     ...WATCH_ZONES.filter((z) => !loadedSet.has(z)).map((z) => ({
       type: 'empty' as const,
       region: z,
@@ -72,13 +79,25 @@ export default function FeedScreen() {
         />
       );
     }
+    if (item.type === 'fallback') {
+      return (
+        <FallbackCard
+          alert={item.data}
+          onPress={() => handlePress(item.data)}
+          loading={refreshingRegion === item.data.region}
+        />
+      );
+    }
     return (
       <EmptyRegionCard
         region={item.region}
         days={days}
         onLoad={() => handleLoad(item.region)}
         loading={loadingRegion === item.region}
-        disabled={loadingRegion !== null && loadingRegion !== item.region}
+        disabled={
+          (loadingRegion !== null && loadingRegion !== item.region) ||
+          refreshingRegion !== null
+        }
       />
     );
   };
@@ -112,9 +131,10 @@ export default function FeedScreen() {
 
       <FlatList
         data={feedItems}
-        keyExtractor={(item) =>
-          item.type === 'alert' ? item.data.region : `empty:${item.region}`
-        }
+        keyExtractor={(item) => {
+          if (item.type === 'empty') return `empty:${item.region}`;
+          return `${item.type}:${item.data.region}`;
+        }}
         renderItem={renderItem}
         refreshControl={
           <RefreshControl

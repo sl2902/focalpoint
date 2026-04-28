@@ -136,7 +136,7 @@ async def _build_alert(
         gdelt_cloud_country, days=days, has_fatalities=has_fatalities
     )
     timespan = "24H" if days == 1 else f"{days}D"
-    gdelt_resp = await gdelt.fetch_articles(f"conflict {region}", timespan=timespan)
+    gdelt_resp = await gdelt.fetch_articles(f"conflict {region}", timespan=timespan, maxrecords=10)
     cpj_stats = cpj.get_country_stats(region)
     rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
@@ -198,6 +198,14 @@ async def _build_alert(
         confidence=severity_result.confidence,
         days=days,
     )
+
+    # Don't cache Gemma API fallback responses — citation id "FALLBACK:*" marks
+    # an ephemeral failure. Caching it would serve a bad result for the full 8h
+    # TTL and prevent the pipeline from retrying on the next request.
+    is_api_fallback = any(c.id.startswith('FALLBACK:') for c in alert.source_citations)
+    if is_api_fallback:
+        logger.warning(f"alerts: skipping cache write for {region!r} — Gemma fallback response")
+        return response
 
     await store.upsert_alert(
         db_path=db_path,

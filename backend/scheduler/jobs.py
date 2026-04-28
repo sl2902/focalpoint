@@ -50,7 +50,7 @@ async def refresh_one_watch_zone(app) -> None:  # noqa: ANN001
         events = await gdelt_cloud.fetch_events(
             gdelt_cloud_country, days=1, has_fatalities=has_fatalities
         )
-        gdelt_resp = await gdelt.fetch_articles(f"conflict {region}")
+        gdelt_resp = await gdelt.fetch_articles(f"conflict {region}", maxrecords=10)
         cpj_stats = cpj.get_country_stats(region)
         rsf_key = RSF_ALIASES.get(region, region)
         rsf_score = RSF_SCORES.get(rsf_key, 0.0)

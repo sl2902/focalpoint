@@ -48,14 +48,19 @@ _ALERT_RESPONSE_SCHEMA = genai_types.Schema(
         ),
         "summary": genai_types.Schema(
             type=genai_types.Type.STRING,
+            max_length=800,  # prevents the model consuming all tokens on one field
         ),
         "source_citations": genai_types.Schema(
             type=genai_types.Type.ARRAY,
+            max_items=10,
             items=genai_types.Schema(
                 type=genai_types.Type.OBJECT,
                 properties={
                     "id": genai_types.Schema(type=genai_types.Type.STRING),
-                    "description": genai_types.Schema(type=genai_types.Type.STRING),
+                    "description": genai_types.Schema(
+                        type=genai_types.Type.STRING,
+                        max_length=120,
+                    ),
                 },
                 required=["id", "description"],
             ),
@@ -74,7 +79,7 @@ _ALERT_RESPONSE_SCHEMA = genai_types.Schema(
 # response_schema enforces AlertOutput structure at the API level.
 _GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
-    max_output_tokens=512,
+    max_output_tokens=1024,
     response_mime_type="application/json",
     response_schema=_ALERT_RESPONSE_SCHEMA,
 )
@@ -240,9 +245,67 @@ class GemmaClient:
 
         raw_text = response.text
         if not raw_text:
-            logger.warning(
-                f"gemma_client: empty response from model for region={region!r}"
-            )
+            # Log finish_reason and safety_ratings to distinguish safety blocks
+            # from other empty-response causes (e.g. schema constraint failures).
+            finish_reason = "unknown"
+            try:
+                candidate = (response.candidates or [None])[0]
+                finish_reason = str(getattr(candidate, "finish_reason", "unknown")) if candidate else "no candidates"
+                safety_ratings = getattr(candidate, "safety_ratings", []) if candidate else []
+                ratings_str = ", ".join(
+                    f"{r.category}={r.probability}" for r in (safety_ratings or [])
+                )
+                logger.warning(
+                    f"gemma_client: empty response from model for region={region!r}"
+                    f" — finish_reason={finish_reason}, safety_ratings=[{ratings_str}]"
+                )
+            except Exception:
+                logger.warning(
+                    f"gemma_client: empty response from model for region={region!r}"
+                )
+
+            # Only retry with web search config for genuine safety filter blocks
+            # (finish_reason SAFETY or unknown). MAX_TOKENS means the budget was
+            # too small — not a content block — so web search won't help.
+            is_safety_block = "MAX_TOKENS" not in finish_reason
+            if not use_web_search and is_safety_block:
+                logger.info(
+                    f"gemma_client: safety filter retry — re-sending region={region!r}"
+                    f" with web search config (no response_schema)"
+                )
+                try:
+                    ws_response = self._client.models.generate_content(
+                        model=_BACKEND_MODEL,
+                        contents=contents,
+                        config=_WEB_SEARCH_GENERATION_CONFIG,
+                    )
+                    ws_text = ws_response.text
+                    if not ws_text:
+                        logger.warning(
+                            f"gemma_client: web search retry also returned empty"
+                            f" for region={region!r} — returning fallback"
+                        )
+                        return _fallback(region)
+                    ws_grounding_urls = _extract_grounding_urls(ws_response)
+                    try:
+                        raw_dict = _extract_json(ws_text)
+                        result = validate_output(raw_dict, region)
+                        # Inject any real grounding URLs as additional citations
+                        # when the model cited internal data instead of search results.
+                        if ws_grounding_urls and not any(
+                            c.id.startswith(("http://", "https://"))
+                            for c in result.source_citations
+                        ):
+                            result = self._structure_web_response(ws_text, region, ws_grounding_urls)
+                        return result
+                    except json.JSONDecodeError:
+                        return self._structure_web_response(ws_text, region, ws_grounding_urls)
+                except Exception as exc:
+                    logger.warning(
+                        f"gemma_client: web search retry failed for region={region!r}"
+                        f" — {type(exc).__name__}: {exc}"
+                    )
+
             return _fallback(region)
 
         logger.debug(f"gemma_client: raw response for region={region!r} — {raw_text!r}")

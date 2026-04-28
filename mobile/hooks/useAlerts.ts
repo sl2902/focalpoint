@@ -15,10 +15,11 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useFocusEffect } from 'expo-router';
-import { fetchFeed } from '../services/alerts';
-import { getLatestAlertsByDays, upsertAlert } from '../services/cache';
+import { fetchAlertForRegion, fetchFeed } from '../services/alerts';
+import { getLatestAlertsByDays, refreshFallbackTimestamp, upsertAlert } from '../services/cache';
 import { useConnectivity } from './useConnectivity';
 import { useSettingsStore } from '../store/useSettingsStore';
+import { useRefreshStore } from '../store/useRefreshStore';
 import type { DaysOption } from '../store/useSettingsStore';
 import type { AlertResponse } from '../types/api';
 
@@ -35,6 +36,7 @@ export function useAlerts(): UseAlertsResult {
   const { isConnected } = useConnectivity();
   const days = useSettingsStore((s) => s.days);
   const setDays = useSettingsStore((s) => s.setDays);
+  const { refreshingRegion, endRefresh } = useRefreshStore();
 
   const [alerts, setAlerts] = useState<AlertResponse[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -79,6 +81,34 @@ export function useAlerts(): UseAlertsResult {
       setVersion((v) => v + 1);
     }, []),
   );
+
+  // Background force-refresh triggered from Alert Detail.
+  // Runs in the feed hook so the fetch survives navigation back from the detail screen.
+  useEffect(() => {
+    if (!refreshingRegion) return;
+    let cancelled = false;
+    fetchAlertForRegion(refreshingRegion, days, true)
+      .then(async (fresh) => {
+        if (cancelled) return;
+        await upsertAlert(fresh, fresh.days ?? days);
+        endRefresh();
+        setVersion((v) => v + 1);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Stamp the existing fallback's timestamp with now so the feed card
+        // reflects when the retry was last attempted, not the original failure.
+        refreshFallbackTimestamp(refreshingRegion!, days)
+          .catch(() => {})
+          .finally(() => {
+            endRefresh();
+            setVersion((v) => v + 1);
+          });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshingRegion, days]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const revalidate = useCallback(() => {
     setVersion((v) => v + 1);
