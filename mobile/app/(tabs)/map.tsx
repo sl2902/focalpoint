@@ -25,48 +25,54 @@ export default function MapScreen() {
   const days = useSettingsStore((s) => s.days);
   const [markers, setMarkers] = useState<ComponentMarker[]>([]);
   const [alertByRegion, setAlertByRegion] = useState<Map<string, AlertResponse>>(new Map());
-  const [version, setVersion] = useState(0);
   // Native: selected marker drives the preview popup overlay.
   const [selectedMarker, setSelectedMarker] = useState<ComponentMarker | null>(null);
   // Native: grey-marker toast.
   const [toastRegion, setToastRegion] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Re-read SQLite whenever days changes, on first mount, or when the tab regains focus.
+  function buildMarkers(alerts: Awaited<ReturnType<typeof getLatestAlertsByDays>>) {
+    const validAlerts = alerts.filter((a) => !isFallback(a));
+    const byRegion = new Map(validAlerts.map((a) => [a.region, a]));
+    setAlertByRegion(byRegion);
+    const newMarkers: ComponentMarker[] = WATCH_ZONES.map((region) => {
+      const coords = WATCH_ZONE_COORDS[region];
+      const alert = byRegion.get(region);
+      return {
+        id: region,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        severity: alert ? alert.severity : 'INSUFFICIENT_DATA',
+        region,
+        timestamp:  alert?.timestamp,
+        summary:    alert?.summary,
+        confidence: alert?.confidence,
+      };
+    });
+    setMarkers(newMarkers);
+    setSelectedMarker(null);
+  }
+
+  // Re-read SQLite when the days window changes (also fires on mount).
   useEffect(() => {
     let cancelled = false;
     getLatestAlertsByDays(days).then((alerts) => {
       if (cancelled) return;
-      // Fallback alerts (failed Gemma calls) show as grey markers — only
-      // valid assessments contribute colour and popup data.
-      const validAlerts = alerts.filter((a) => !isFallback(a));
-      const byRegion = new Map(validAlerts.map((a) => [a.region, a]));
-      setAlertByRegion(byRegion);
-      const newMarkers: ComponentMarker[] = WATCH_ZONES.map((region) => {
-        const coords = WATCH_ZONE_COORDS[region];
-        const alert = byRegion.get(region);
-        return {
-          id: region,
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          severity: alert ? alert.severity : 'INSUFFICIENT_DATA',
-          region,
-          timestamp:  alert?.timestamp,
-          summary:    alert?.summary,
-          confidence: alert?.confidence,
-        };
-      });
-      setMarkers(newMarkers);
-      // Dismiss stale popup when data refreshes.
-      setSelectedMarker(null);
+      buildMarkers(alerts);
     });
     return () => { cancelled = true; };
-  }, [days, version]);
+  }, [days]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Re-read SQLite when the tab regains focus (catches data written while away).
   useFocusEffect(
     useCallback(() => {
-      setVersion((v) => v + 1);
-    }, []),
+      let cancelled = false;
+      getLatestAlertsByDays(days).then((alerts) => {
+        if (cancelled) return;
+        buildMarkers(alerts);
+      });
+      return () => { cancelled = true; };
+    }, [days]), // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   useEffect(() => {

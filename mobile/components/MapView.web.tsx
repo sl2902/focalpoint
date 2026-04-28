@@ -253,7 +253,9 @@ function buildLeafletHtml(markers: ComponentMarker[]): string {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MapViewWeb({ markers, onMarkerPress }: Props) {
-  const html = useMemo(() => buildLeafletHtml(markers), [markers]);
+  const markersJson = JSON.stringify(markers);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const html = useMemo(() => buildLeafletHtml(markers), [markersJson]);
   const markersRef = useRef(markers);
   markersRef.current = markers;
 
