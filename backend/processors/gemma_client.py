@@ -326,10 +326,9 @@ class GemmaClient:
                     try:
                         raw_dict = _extract_json(ws_text)
                         result = validate_output(raw_dict, region)
-                        # Inject any real grounding URLs as additional citations
-                        # when the model cited internal data instead of search results.
-                        if ws_grounding_urls and not any(
-                            c.id.startswith(("http://", "https://"))
+                        # Replace internal Vertex redirect URLs with real publisher URLs.
+                        if ws_grounding_urls and any(
+                            "vertexaisearch.cloud.google.com" in c.id
                             for c in result.source_citations
                         ):
                             result = self._structure_web_response(ws_text, region, ws_grounding_urls)
@@ -368,6 +367,19 @@ class GemmaClient:
             return _fallback(region)
 
         result = validate_output(raw_dict, region)
+
+        # When web search was active and the model embedded internal Vertex
+        # redirect URLs (which expire quickly), replace them with the real
+        # publisher URLs extracted from the grounding metadata.
+        if use_web_search and grounding_urls and any(
+            "vertexaisearch.cloud.google.com" in c.id
+            for c in result.source_citations
+        ):
+            logger.info(
+                f"gemma_client: vertexaisearch redirect URLs detected"
+                f" — re-structuring citations with real URLs for region={region!r}"
+            )
+            return self._structure_web_response(raw_text, region, grounding_urls)
 
         if result.severity == "INSUFFICIENT_DATA":
             logger.warning(
