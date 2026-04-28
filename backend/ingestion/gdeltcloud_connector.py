@@ -45,6 +45,7 @@ Real API response structure (confirmed from live curl):
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import json
 from typing import Any
@@ -55,6 +56,9 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
 from backend.config import settings as _settings
+
+# Prevents simultaneous GDELT Cloud requests — free tier has a low rate limit.
+_CLOUD_SEM = asyncio.Semaphore(1)
 
 GDELT_CLOUD_BASE_URL = "https://gdeltcloud.com/api/v2/events"
 
@@ -318,13 +322,25 @@ class GdeltCloudConnector:
         if has_fatalities:
             params["has_fatalities"] = "true"
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                GDELT_CLOUD_BASE_URL,
-                params=params,
-                headers=self._auth_headers(),
-            )
-            response.raise_for_status()
+        if _CLOUD_SEM.locked():
+            logger.warning(f"gdeltcloud: semaphore busy — queuing request for {country!r}")
+        async with _CLOUD_SEM:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    GDELT_CLOUD_BASE_URL,
+                    params=params,
+                    headers=self._auth_headers(),
+                )
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 429:
+                        logger.warning(
+                            f"gdeltcloud: 429 Too Many Requests for {country!r}"
+                            " — returning empty response (quota guard)"
+                        )
+                        return []
+                    raise
 
         api_resp = _RawApiResponse(**response.json())
         events = [_parse_event(raw) for raw in api_resp.data]

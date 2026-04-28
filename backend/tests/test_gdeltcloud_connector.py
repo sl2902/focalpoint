@@ -20,6 +20,7 @@ from backend.ingestion.gdeltcloud_connector import (
     GdeltCloudGeo,
     GdeltCloudMetrics,
     GdeltCloudResponse,
+    _CLOUD_SEM,
 )
 
 # ---------------------------------------------------------------------------
@@ -560,14 +561,16 @@ class TestNoRedis:
 
 
 class TestHttpErrors:
-    async def test_http_error_propagates(
+    async def test_non_429_http_error_propagates(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
+        mock_503 = MagicMock()
+        mock_503.status_code = 503
         mock_http_client.get.return_value.raise_for_status.side_effect = (
-            httpx.HTTPStatusError("429", request=MagicMock(), response=MagicMock())
+            httpx.HTTPStatusError("503", request=MagicMock(), response=mock_503)
         )
 
         with patch(
@@ -586,8 +589,10 @@ class TestHttpErrors:
         mock_http_client: AsyncMock,
         mock_settings: MagicMock,
     ) -> None:
+        mock_401 = MagicMock()
+        mock_401.status_code = 401
         mock_http_client.get.return_value.raise_for_status.side_effect = (
-            httpx.HTTPStatusError("401", request=MagicMock(), response=MagicMock())
+            httpx.HTTPStatusError("401", request=MagicMock(), response=mock_401)
         )
 
         with patch(
@@ -599,6 +604,64 @@ class TestHttpErrors:
             )
             with pytest.raises(httpx.HTTPStatusError):
                 await connector.fetch_events("Syria")
+
+    async def test_429_returns_empty_list(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        """Rate-limit response (429) must return [] without propagating the error."""
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+        mock_http_client.get.return_value.raise_for_status.side_effect = (
+            httpx.HTTPStatusError("429 Too Many Requests", request=MagicMock(), response=mock_429)
+        )
+
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            events = await connector.fetch_events("Syria")
+
+        assert events == []
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — semaphore protection
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrency:
+    def test_semaphore_initial_value_is_one(self) -> None:
+        """Module-level semaphore must start with exactly 1 slot."""
+        assert _CLOUD_SEM._value == 1
+
+    async def test_concurrent_requests_serialised(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+        mock_settings: MagicMock,
+    ) -> None:
+        """Two simultaneous fetch_events calls must complete without error."""
+        import asyncio as _asyncio
+
+        with patch(
+            "backend.ingestion.gdeltcloud_connector.httpx.AsyncClient",
+            return_value=mock_http_client,
+        ):
+            connector = GdeltCloudConnector(
+                redis_client=mock_redis, app_settings=mock_settings
+            )
+            results = await _asyncio.gather(
+                connector.fetch_events("Syria"),
+                connector.fetch_events("Yemen"),
+            )
+
+        assert all(len(r) == 1 for r in results)
 
 
 # ---------------------------------------------------------------------------

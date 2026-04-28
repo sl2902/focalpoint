@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import re
-
+import threading
 import time
 
 import httpx
@@ -30,6 +30,11 @@ from loguru import logger
 
 from backend.config import settings
 from backend.security.output_validator import AlertOutput, validate_output
+
+# Limits concurrent Gemma API calls. Threading (not asyncio) because generate_alert
+# is synchronous and may be called from thread-pool workers by FastAPI.
+# A third caller waits up to 30 s before raising TimeoutError.
+_GEMMA_SEM = threading.BoundedSemaphore(2)
 
 # Model ID for the 26B backend tier (see CLAUDE.md)
 _BACKEND_MODEL = "gemma-4-26b-a4b-it"
@@ -182,6 +187,37 @@ class GemmaClient:
         Returns:
             Validated AlertOutput. Never raises.
         """
+        acquired = _GEMMA_SEM.acquire(blocking=False)
+        if not acquired:
+            logger.warning(
+                f"gemma_client: at capacity (2 concurrent calls)"
+                f" — queuing request for region={region!r} (timeout=30s)"
+            )
+            acquired = _GEMMA_SEM.acquire(blocking=True, timeout=30)
+            if not acquired:
+                raise TimeoutError(
+                    f"gemma_client: timed out waiting for Gemma slot (30s) — region={region!r}"
+                )
+        try:
+            return self._generate_alert_inner(
+                prompt=prompt,
+                region=region,
+                use_web_search=use_web_search,
+                audio_bytes=audio_bytes,
+                audio_mime_type=audio_mime_type,
+            )
+        finally:
+            _GEMMA_SEM.release()
+
+    def _generate_alert_inner(
+        self,
+        prompt: str,
+        region: str,
+        use_web_search: bool = False,
+        audio_bytes: bytes | None = None,
+        audio_mime_type: str | None = None,
+    ) -> AlertOutput:
+        """Inner implementation of generate_alert (called with semaphore already held)."""
         config = _WEB_SEARCH_GENERATION_CONFIG if use_web_search else _GENERATION_CONFIG
 
         # Build contents — multimodal list when audio provided, plain string otherwise.

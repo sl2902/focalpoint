@@ -24,6 +24,7 @@ from backend.ingestion.gdelt_connector import (
     GdeltArticle,
     GdeltConnector,
     GdeltResponse,
+    _GDELT_SEM,
     _MAX_RETRIES,
     _RETRY_DELAY_S,
     _parse_aggregate_tone,
@@ -606,8 +607,10 @@ class TestHttpErrors:
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
+        mock_503 = MagicMock()
+        mock_503.status_code = 503
         mock_http_client.get.side_effect = httpx.HTTPStatusError(
-            "503", request=MagicMock(), response=MagicMock()
+            "503", request=MagicMock(), response=mock_503
         )
 
         with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
@@ -632,6 +635,57 @@ class TestHttpErrors:
 
         assert result.articles == []
         assert result.aggregate_tone == 0.0
+
+    async def test_429_returns_empty_response_immediately(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        """429 must short-circuit the retry loop and return empty GdeltResponse."""
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+        mock_http_client.get.side_effect = httpx.HTTPStatusError(
+            "429 Too Many Requests", request=MagicMock(), response=mock_429
+        )
+
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            with patch("backend.ingestion.gdelt_connector.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+                connector = GdeltConnector(redis_client=mock_redis)
+                result = await connector.fetch_articles("conflict Gaza")
+
+        assert isinstance(result, GdeltResponse)
+        assert result.articles == []
+        assert result.aggregate_tone == 0.0
+        # No sleep — 429 exits immediately without retrying.
+        mock_sleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — semaphore protection
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrency:
+    def test_semaphore_initial_value_is_one(self) -> None:
+        """Module-level semaphore must start with exactly 1 slot."""
+        assert _GDELT_SEM._value == 1
+
+    async def test_concurrent_requests_complete_without_error(
+        self,
+        mock_redis: AsyncMock,
+        mock_http_client: AsyncMock,
+    ) -> None:
+        """Two simultaneous fetch_articles calls must both succeed."""
+        import asyncio as _asyncio
+
+        with patch("backend.ingestion.gdelt_connector.httpx.AsyncClient", return_value=mock_http_client):
+            connector = GdeltConnector(redis_client=mock_redis)
+            results = await _asyncio.gather(
+                connector.fetch_articles("conflict Gaza"),
+                connector.fetch_articles("journalist Syria"),
+            )
+
+        assert all(len(r.articles) == 1 for r in results)
 
 
 # ---------------------------------------------------------------------------

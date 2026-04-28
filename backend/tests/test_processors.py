@@ -23,7 +23,7 @@ from backend.ingestion.gdeltcloud_connector import (
 )
 from backend.alerts.severity_scorer import SeverityLevel, SeverityResult
 from backend.processors.alert_generator import SEVERITY_ORDER, AlertGenerator, _apply_max_severity
-from backend.processors.gemma_client import GemmaClient, _extract_json
+from backend.processors.gemma_client import GemmaClient, _GEMMA_SEM, _extract_json
 from backend.processors.prompt_builder import (
     BACKEND_MAX_EVENTS,
     BACKEND_MAX_GDELT,
@@ -1132,3 +1132,61 @@ class TestMaxSeverityRule:
             region=_REGION,
         )
         assert result.severity == "GREEN"
+
+
+# ---------------------------------------------------------------------------
+# GemmaClient semaphore — concurrency protection
+# ---------------------------------------------------------------------------
+
+
+class TestGemmaClientSemaphore:
+    def test_semaphore_initial_capacity_is_two(self) -> None:
+        """Module-level semaphore must allow up to 2 concurrent Gemma calls."""
+        assert _GEMMA_SEM._value == 2
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_semaphore_released_after_successful_call(self, mock_client_cls) -> None:
+        """Semaphore must be released in the finally block even on success."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            _valid_alert_dict()
+        )
+
+        client = GemmaClient(api_key="fake-key")
+        before = _GEMMA_SEM._value
+        client.generate_alert("prompt", _REGION)
+        after = _GEMMA_SEM._value
+
+        assert after == before  # semaphore restored to pre-call level
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_semaphore_released_after_exception(self, mock_client_cls) -> None:
+        """Semaphore must be released even when generate_alert catches an exception."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.side_effect = RuntimeError("API down")
+
+        client = GemmaClient(api_key="fake-key")
+        before = _GEMMA_SEM._value
+        client.generate_alert("prompt", _REGION)  # returns fallback, no raise
+        after = _GEMMA_SEM._value
+
+        assert after == before
+
+    def test_timeout_error_raised_when_semaphore_exhausted(self) -> None:
+        """With 0 slots available and timeout=0, TimeoutError must be raised."""
+        import threading as _threading
+
+        # Drain both slots synchronously.
+        _GEMMA_SEM.acquire()
+        _GEMMA_SEM.acquire()
+        try:
+            with patch("backend.processors.gemma_client._GEMMA_SEM") as mock_sem:
+                mock_sem.acquire.side_effect = [False, False]
+                client = GemmaClient(api_key="fake-key")
+                with pytest.raises(TimeoutError, match="timed out"):
+                    client.generate_alert("prompt", _REGION)
+        finally:
+            _GEMMA_SEM.release()
+            _GEMMA_SEM.release()

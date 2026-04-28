@@ -28,6 +28,9 @@ from pydantic import BaseModel
 GDELT_BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_CACHE_TTL = 900  # seconds — matches GDELT 15-minute update cadence
 
+# Prevents simultaneous GDELT Doc API requests from hammering the no-auth endpoint.
+_GDELT_SEM = asyncio.Semaphore(1)
+
 _MAX_RETRIES = 3          # number of retries after the initial attempt
 _RETRY_DELAY_S = 2        # seconds between attempts
 _REQUEST_TIMEOUT = httpx.Timeout(15.0)  # per-attempt timeout
@@ -146,9 +149,12 @@ class GdeltConnector:
             artlist_params["country"] = country
             tone_params["country"] = country
 
+        if _GDELT_SEM.locked():
+            logger.warning(f"gdelt: semaphore busy — queuing request for query={query!r}")
         articles: list[GdeltArticle] = []
         aggregate_tone: float = 0.0
-        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
+        async with _GDELT_SEM:
+          async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
             for attempt in range(_MAX_RETRIES + 1):
                 # Phase 1: network call — retry on timeout or HTTP error.
                 try:
@@ -159,6 +165,12 @@ class GdeltConnector:
                     artlist_resp.raise_for_status()
                     tone_resp.raise_for_status()
                 except Exception as exc:
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                        logger.warning(
+                            f"gdelt: 429 Too Many Requests for query={query!r}"
+                            " — returning empty response (rate limit)"
+                        )
+                        return GdeltResponse()
                     if attempt < _MAX_RETRIES:
                         logger.warning(
                             f"GDELT fetch attempt {attempt + 1}/{_MAX_RETRIES + 1} failed: {exc}"
