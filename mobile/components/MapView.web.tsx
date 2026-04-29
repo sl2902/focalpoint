@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { SEVERITY_COLORS, SEVERITY_BG_COLORS } from '../constants/severity';
 import type { ComponentMarker } from '../types/map';
@@ -57,26 +57,44 @@ function buildPopupHtml(marker: ComponentMarker): string {
     '</div>' +
     '<div class="fp-ts">' + ts + '</div>' +
     (summary ? '<div class="fp-summary">' + summary + '</div>' : '') +
-    '<div class="fp-conf">Confidence ' + conf + '</div>' +
+    '<div class="fp-conf">Confidence ' + conf + '</div>' +
     '<button class="fp-btn" data-mid="' + marker.id + '" onclick="fpNavigate(this.getAttribute(\'data-mid\'))">View Full Assessment →</button>' +
     '</div>'
   );
 }
 
-// ── Leaflet HTML ──────────────────────────────────────────────────────────────
+// ── Marker data payload (sent to iframe via postMessage) ──────────────────────
 
-function buildLeafletHtml(markers: ComponentMarker[]): string {
-  const markerData = markers.map((m) => ({
+interface MarkerDatum {
+  id: string;
+  lat: number;
+  lng: number;
+  color: string;
+  severity: string;
+  isCritical: boolean;
+  popupHtml: string;
+}
+
+function buildMarkerData(markers: ComponentMarker[]): MarkerDatum[] {
+  return markers.map((m) => ({
     id:         m.id,
     lat:        m.latitude,
     lng:        m.longitude,
-    color:      SEVERITY_COLORS[m.severity],
+    color:      (SEVERITY_COLORS[m.severity as Severity] ?? '#6b7280') as string,
     severity:   m.severity,
     isCritical: m.severity === 'CRITICAL',
     popupHtml:  buildPopupHtml(m),
   }));
+}
 
-  return `<!DOCTYPE html>
+// ── Leaflet base HTML — loaded once, markers injected via postMessage ─────────
+//
+// The iframe never reloads after the initial load. When the parent's markers
+// state changes it sends a "fpUpdateMarkers" postMessage; the iframe clears its
+// cluster group and re-adds the new markers without destroying the Leaflet
+// instance or the map viewport.
+
+const LEAFLET_BASE_HTML = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -87,11 +105,6 @@ function buildLeafletHtml(markers: ComponentMarker[]): string {
     html, body, #map { height: 100%; margin: 0; padding: 0; background: #1a1a2e; }
 
     /* ── CRITICAL pulse ───────────────────────────────────── */
-    /*
-     * The icon container is 50×50 so the expanding ring (max ~3× the 14px
-     * dot = 42px) has room without being clipped.  iconAnchor [25,25]
-     * centres it on the coordinate.
-     */
     .fp-crit-icon { background: transparent !important; border: none !important; }
     .fp-crit-wrap {
       width: 50px; height: 50px;
@@ -107,7 +120,7 @@ function buildLeafletHtml(markers: ComponentMarker[]): string {
     .fp-crit-ring {
       position: absolute;
       width: 14px; height: 14px; border-radius: 50%;
-      border: 2.5px solid;          /* colour set inline */
+      border: 2.5px solid;
       opacity: 0;
       animation: fp-pulse 2s ease-out infinite;
     }
@@ -171,7 +184,6 @@ function buildLeafletHtml(markers: ComponentMarker[]): string {
       window.parent.postMessage({ type: 'fpMarkerPress', id: id }, '*');
     }
 
-    /* Severity rank — lower index = higher severity */
     var SEV_ORDER  = ['CRITICAL', 'RED', 'AMBER', 'GREEN', 'INSUFFICIENT_DATA'];
     var SEV_COLORS = {
       CRITICAL: '#7c3aed', RED: '#ef4444', AMBER: '#f59e0b',
@@ -203,10 +215,9 @@ function buildLeafletHtml(markers: ComponentMarker[]): string {
         });
       }
     });
+    map.addLayer(clusterGroup);
 
-    var markers = ${JSON.stringify(markerData)};
-
-    markers.forEach(function(m) {
+    function addMarker(m) {
       var leafletMarker;
 
       if (m.isCritical) {
@@ -235,47 +246,70 @@ function buildLeafletHtml(markers: ComponentMarker[]): string {
         });
       }
 
-      /* Attach severity so the cluster group can read it */
       leafletMarker.fpSeverity = m.severity;
-
       leafletMarker.bindPopup(m.popupHtml, { maxWidth: 250, closeButton: true });
       leafletMarker.on('click', function() { leafletMarker.openPopup(); });
-
       clusterGroup.addLayer(leafletMarker);
-    });
+    }
 
-    map.addLayer(clusterGroup);
+    window.addEventListener('message', function(event) {
+      if (!event.data || event.data.type !== 'fpUpdateMarkers') return;
+      clusterGroup.clearLayers();
+      event.data.markers.forEach(addMarker);
+    });
   </script>
 </body>
 </html>`;
-}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MapViewWeb({ markers, onMarkerPress }: Props) {
-  const markersJson = JSON.stringify(markers);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const html = useMemo(() => buildLeafletHtml(markers), [markersJson]);
+  const iframeRef    = useRef<HTMLIFrameElement | null>(null);
+  const isReadyRef   = useRef(false);
+  const onMarkerPressRef = useRef(onMarkerPress);
+  onMarkerPressRef.current = onMarkerPress;
   const markersRef = useRef(markers);
   markersRef.current = markers;
+
+  function pushMarkers(ms: ComponentMarker[]) {
+    const iframe = iframeRef.current;
+    if (!iframe?.contentWindow) return;
+    iframe.contentWindow.postMessage(
+      { type: 'fpUpdateMarkers', markers: buildMarkerData(ms) },
+      '*',
+    );
+  }
+
+  // Called once when the iframe finishes loading its base HTML + Leaflet scripts.
+  const handleLoad = useCallback(() => {
+    isReadyRef.current = true;
+    pushMarkers(markersRef.current);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Push updated markers whenever markers prop changes (no iframe reload needed).
+  useEffect(() => {
+    if (isReadyRef.current) pushMarkers(markers);
+  }, [markers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
       if (event.data?.type !== 'fpMarkerPress') return;
       const marker = markersRef.current.find((m) => m.id === event.data.id);
-      if (marker) onMarkerPress(marker);
+      if (marker) onMarkerPressRef.current(marker);
     }
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [onMarkerPress]);
+  }, []);
 
   return (
     <View style={styles.container}>
       {React.createElement('iframe', {
-        title: 'Incident Map',
-        srcDoc: html,
+        ref:     iframeRef,
+        onLoad:  handleLoad,
+        title:   'Incident Map',
+        srcDoc:  LEAFLET_BASE_HTML,
         sandbox: 'allow-scripts',
-        style: { border: 'none', width: '100%', height: '100%', display: 'block' },
+        style:   { border: 'none', width: '100%', height: '100%', display: 'block' },
       })}
     </View>
   );
