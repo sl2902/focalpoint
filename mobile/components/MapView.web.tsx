@@ -166,6 +166,19 @@ const LEAFLET_BASE_HTML = `<!DOCTYPE html>
     .fp-btn { display: block; width: 100%; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 7px 0; font-size: 12px; font-weight: 600; cursor: pointer; text-align: center; box-sizing: border-box; }
     .fp-btn:hover { background: #1d4ed8; }
     .fp-nodata { font-size: 12px; color: #6b7280; line-height: 1.5; margin: 4px 0 0; }
+
+    /* ── Reset-view control (sits below +/- zoom, same visual style) ─ */
+    .fp-reset-btn {
+      display: block;
+      width: 26px; height: 26px;
+      line-height: 26px;
+      text-align: center;
+      text-decoration: none;
+      font-size: 15px;
+      color: #444;
+      background: #fff;
+    }
+    .fp-reset-btn:hover { background: #f4f4f4; color: #222; }
   </style>
 </head>
 <body>
@@ -216,6 +229,26 @@ const LEAFLET_BASE_HTML = `<!DOCTYPE html>
       }
     });
     map.addLayer(clusterGroup);
+
+    /* ── Reset-view control ────────────────────────────────── */
+    var ResetControl = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function(m) {
+        var container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+        var btn = L.DomUtil.create('a', 'fp-reset-btn', container);
+        btn.innerHTML = '&#8962;';   /* ⌂ home */
+        btn.href = '#';
+        btn.title = 'Reset view';
+        btn.setAttribute('role', 'button');
+        btn.setAttribute('aria-label', 'Reset view');
+        L.DomEvent
+          .on(btn, 'click', L.DomEvent.stopPropagation)
+          .on(btn, 'click', L.DomEvent.preventDefault)
+          .on(btn, 'click', function() { m.setView([31.9, 35.2], 3); });
+        return container;
+      }
+    });
+    new ResetControl().addTo(map);
 
     function addMarker(m) {
       var leafletMarker;
