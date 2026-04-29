@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { SEVERITY_COLORS, SEVERITY_BG_COLORS } from '../constants/severity';
 import type { ComponentMarker } from '../types/map';
@@ -264,12 +264,15 @@ const LEAFLET_BASE_HTML = `<!DOCTYPE html>
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function MapViewWeb({ markers, onMarkerPress }: Props) {
-  const iframeRef    = useRef<HTMLIFrameElement | null>(null);
-  const isReadyRef   = useRef(false);
+  const iframeRef        = useRef<HTMLIFrameElement | null>(null);
   const onMarkerPressRef = useRef(onMarkerPress);
   onMarkerPressRef.current = onMarkerPress;
   const markersRef = useRef(markers);
   markersRef.current = markers;
+
+  // State (not ref) so that when the iframe loads it triggers a re-render and
+  // the send-markers effect runs with the guaranteed-current markers value.
+  const [iframeReady, setIframeReady] = useState(false);
 
   function pushMarkers(ms: ComponentMarker[]) {
     const iframe = iframeRef.current;
@@ -282,14 +285,16 @@ export default function MapViewWeb({ markers, onMarkerPress }: Props) {
 
   // Called once when the iframe finishes loading its base HTML + Leaflet scripts.
   const handleLoad = useCallback(() => {
-    isReadyRef.current = true;
-    pushMarkers(markersRef.current);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    setIframeReady(true);
+  }, []);
 
-  // Push updated markers whenever markers prop changes (no iframe reload needed).
+  // Send (or re-send) markers whenever the iframe becomes ready OR markers change.
+  // Using iframeReady as state means the effect sees the committed React markers
+  // value — no ref timing race between the iframe load event and React commits.
   useEffect(() => {
-    if (isReadyRef.current) pushMarkers(markers);
-  }, [markers]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!iframeReady) return;
+    pushMarkers(markers);
+  }, [iframeReady, markers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     function handleMessage(event: MessageEvent) {
