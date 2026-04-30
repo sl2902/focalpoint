@@ -4,6 +4,8 @@ import { SeverityBadge } from './SeverityBadge';
 import { SEVERITY_BG_COLORS } from '../constants/severity';
 import type { AlertResponse } from '../types/api';
 
+const ANNOTATION_PATTERN = /\s*\[(Elevation note:|Note:|Historical risk floor applied)[^\]]*\]/gi;
+
 interface Props {
   alert: AlertResponse;
   onPress?: () => void;
@@ -14,6 +16,7 @@ export function AlertCard({ alert, onPress }: Props) {
   const ts = new Date(alert.timestamp);
   const dateLabel = ts.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
   const timeLabel = ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+  const summary = alert.summary.replace(ANNOTATION_PATTERN, '').trim();
 
   return (
     <Pressable
@@ -26,7 +29,7 @@ export function AlertCard({ alert, onPress }: Props) {
         <Text style={styles.time}>{dateLabel} · {timeLabel} UTC</Text>
       </View>
       <Text style={styles.summary} numberOfLines={3}>
-        {alert.summary}
+        {summary}
       </Text>
     </Pressable>
   );

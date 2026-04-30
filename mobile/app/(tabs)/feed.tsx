@@ -109,6 +109,7 @@ export default function FeedScreen() {
           <Text style={styles.title}>FocalPoint</Text>
           <Text style={styles.subtitle}>Conflict Intelligence Feed</Text>
         </View>
+        <Text style={styles.timeLabel}>Showing {days}d data</Text>
       </View>
 
       <FlatList
@@ -146,6 +147,9 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9fafb' },
 
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 12,
@@ -155,6 +159,7 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: 22, fontWeight: '700', color: '#111827' },
   subtitle: { fontSize: 13, color: '#6b7280', marginTop: 2 },
+  timeLabel: { fontSize: 12, color: '#6b7280', fontWeight: '500' },
 
   list: { paddingVertical: 8 },
   listEmpty: { flex: 1 },
