@@ -63,11 +63,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.SCHEDULER_ENABLED:
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
-            jobs.refresh_one_watch_zone,
+            jobs.refresh_all_watch_zones,
             "interval",
             hours=8,
             args=[app],
-            id="refresh_watch_zone",
+            id="refresh_watch_zones",
             replace_existing=True,
         )
         scheduler.start()

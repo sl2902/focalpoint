@@ -1,6 +1,6 @@
-"""Tests for backend/scheduler/store.py — SQLite persistence layer.
+"""Tests for backend/scheduler/ — store.py persistence and jobs.py logic.
 
-All tests use tmp_path (real temp file) so aiosqlite connections
+All store tests use tmp_path (real temp file) so aiosqlite connections
 across calls share the same data. In-memory :memory: does not persist
 across separate aiosqlite.connect() calls.
 """
@@ -217,3 +217,279 @@ class TestGetLatestPerRegion:
         result = await store.get_latest_per_region(db_path)
         severities = [r.severity for r in result]
         assert severities == ["CRITICAL", "RED", "AMBER"]
+
+
+# ---------------------------------------------------------------------------
+# TestRefreshAllWatchZones
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshAllWatchZones:
+    """Tests for jobs.refresh_all_watch_zones.
+
+    The job touches external services (GDELT, Gemma) so all dependencies are
+    mocked. store.get_cached_alert and store.upsert_alert are patched so no
+    real SQLite file is required for these tests.
+    """
+
+    def _make_app(self, db_path: str = "/fake/alerts.db"):
+        """Return a minimal mock app with the attributes jobs.py reads."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        return SimpleNamespace(
+            state=SimpleNamespace(
+                db_path=db_path,
+                redis=None,
+                cpj=MagicMock(),
+                alert_generator=MagicMock(),
+            )
+        )
+
+    def _make_alert_output(self, region: str = "Gaza", severity: str = "RED"):
+        from datetime import datetime, timezone
+        from unittest.mock import MagicMock
+
+        from backend.security.output_validator import Citation
+
+        alert = MagicMock()
+        alert.severity = severity
+        alert.summary = f"Test summary for {region}."
+        alert.source_citations = [Citation(id="evt_001", description="Test event")]
+        alert.timestamp = datetime.now(tz=timezone.utc)
+        return alert
+
+    def _make_severity_result(self, score: float = 55.0, confidence: float = 0.75):
+        from unittest.mock import MagicMock
+
+        sr = MagicMock()
+        sr.score = score
+        sr.confidence = confidence
+        return sr
+
+    async def test_all_stale_zones_are_refreshed(self, tmp_path) -> None:
+        """Every zone triggers a live refresh when none are cached."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        zones = ["Palestine", "Gaza", "Ukraine"]
+        app = self._make_app()
+
+        gdelt_resp = MagicMock()
+        gdelt_resp.articles = []
+        gdelt_resp.aggregate_tone = 0.0
+
+        app.state.alert_generator.generate.return_value = self._make_alert_output()
+        refreshed: list[str] = []
+
+        async def fake_cached(db_path, region, days=1):
+            return None
+
+        async def fake_upsert(db_path, *, region, **kwargs):
+            refreshed.append(region)
+
+        with (
+            patch("backend.scheduler.jobs.settings") as mock_settings,
+            patch("backend.scheduler.jobs.store.get_cached_alert", side_effect=fake_cached),
+            patch("backend.scheduler.jobs.store.upsert_alert", side_effect=fake_upsert),
+            patch("backend.scheduler.jobs.GdeltCloudConnector") as MockCloud,
+            patch("backend.scheduler.jobs.GdeltConnector") as MockGdelt,
+            patch("backend.scheduler.jobs.score_severity", return_value=self._make_severity_result()),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_settings.WATCH_ZONES = zones
+            mock_settings.GDELT_CLOUD_ALIASES = {}
+            mock_settings.NO_FATALITIES_FILTER_COUNTRIES = set()
+
+            cloud_inst = AsyncMock()
+            cloud_inst.fetch_events = AsyncMock(return_value=[])
+            MockCloud.return_value = cloud_inst
+
+            gdelt_inst = AsyncMock()
+            gdelt_inst.fetch_articles = AsyncMock(return_value=gdelt_resp)
+            MockGdelt.return_value = gdelt_inst
+
+            from backend.scheduler.jobs import refresh_all_watch_zones
+            await refresh_all_watch_zones(app)
+
+        assert set(refreshed) == {"Palestine", "Gaza", "Ukraine"}
+
+    async def test_fresh_zones_are_skipped(self, tmp_path) -> None:
+        """Zones with a fresh cached alert must not trigger GDELT/Gemma calls."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from backend.api.schemas import AlertResponse
+        from backend.security.output_validator import Citation
+
+        zones = ["Gaza", "Ukraine"]
+        app = self._make_app()
+
+        fresh_alert = MagicMock(spec=AlertResponse)
+
+        async def fake_cached(db_path, region, days=1):
+            return fresh_alert  # all zones are fresh
+
+        with (
+            patch("backend.scheduler.jobs.settings") as mock_settings,
+            patch("backend.scheduler.jobs.store.get_cached_alert", side_effect=fake_cached),
+            patch("backend.scheduler.jobs.GdeltCloudConnector") as MockCloud,
+            patch("backend.scheduler.jobs.GdeltConnector") as MockGdelt,
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_settings.WATCH_ZONES = zones
+            mock_settings.GDELT_CLOUD_ALIASES = {}
+            mock_settings.NO_FATALITIES_FILTER_COUNTRIES = set()
+
+            from backend.scheduler.jobs import refresh_all_watch_zones
+            await refresh_all_watch_zones(app)
+
+        MockCloud.assert_not_called()
+        MockGdelt.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    async def test_sleep_between_refreshed_zones_not_first(self) -> None:
+        """asyncio.sleep(5) is called between live refreshes but NOT before the first."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        zones = ["Palestine", "Gaza", "Ukraine"]
+        app = self._make_app()
+
+        gdelt_resp = MagicMock()
+        gdelt_resp.articles = []
+        gdelt_resp.aggregate_tone = 0.0
+
+        app.state.alert_generator.generate.return_value = self._make_alert_output()
+
+        async def fake_cached(db_path, region, days=1):
+            return None
+
+        with (
+            patch("backend.scheduler.jobs.settings") as mock_settings,
+            patch("backend.scheduler.jobs.store.get_cached_alert", side_effect=fake_cached),
+            patch("backend.scheduler.jobs.store.upsert_alert", AsyncMock()),
+            patch("backend.scheduler.jobs.GdeltCloudConnector") as MockCloud,
+            patch("backend.scheduler.jobs.GdeltConnector") as MockGdelt,
+            patch("backend.scheduler.jobs.score_severity", return_value=self._make_severity_result()),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_settings.WATCH_ZONES = zones
+            mock_settings.GDELT_CLOUD_ALIASES = {}
+            mock_settings.NO_FATALITIES_FILTER_COUNTRIES = set()
+
+            cloud_inst = AsyncMock()
+            cloud_inst.fetch_events = AsyncMock(return_value=[])
+            MockCloud.return_value = cloud_inst
+
+            gdelt_inst = AsyncMock()
+            gdelt_inst.fetch_articles = AsyncMock(return_value=gdelt_resp)
+            MockGdelt.return_value = gdelt_inst
+
+            from backend.scheduler.jobs import refresh_all_watch_zones
+            await refresh_all_watch_zones(app)
+
+        # 3 zones refreshed → sleep called exactly twice (between 1→2 and 2→3)
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_called_with(5)
+
+    async def test_error_in_one_zone_does_not_stop_others(self) -> None:
+        """An exception during one zone's refresh must not prevent subsequent zones."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        zones = ["Gaza", "Ukraine", "Sudan"]
+        app = self._make_app()
+
+        gdelt_resp = MagicMock()
+        gdelt_resp.articles = []
+        gdelt_resp.aggregate_tone = 0.0
+
+        app.state.alert_generator.generate.return_value = self._make_alert_output()
+        refreshed: list[str] = []
+
+        async def fake_cached(db_path, region, days=1):
+            return None
+
+        async def fake_upsert(db_path, *, region, **kwargs):
+            refreshed.append(region)
+
+        call_count = 0
+
+        async def fetch_events_flaky(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("GDELT Cloud timeout")
+            return []
+
+        with (
+            patch("backend.scheduler.jobs.settings") as mock_settings,
+            patch("backend.scheduler.jobs.store.get_cached_alert", side_effect=fake_cached),
+            patch("backend.scheduler.jobs.store.upsert_alert", side_effect=fake_upsert),
+            patch("backend.scheduler.jobs.GdeltCloudConnector") as MockCloud,
+            patch("backend.scheduler.jobs.GdeltConnector") as MockGdelt,
+            patch("backend.scheduler.jobs.score_severity", return_value=self._make_severity_result()),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_settings.WATCH_ZONES = zones
+            mock_settings.GDELT_CLOUD_ALIASES = {}
+            mock_settings.NO_FATALITIES_FILTER_COUNTRIES = set()
+
+            cloud_inst = AsyncMock()
+            cloud_inst.fetch_events = AsyncMock(side_effect=fetch_events_flaky)
+            MockCloud.return_value = cloud_inst
+
+            gdelt_inst = AsyncMock()
+            gdelt_inst.fetch_articles = AsyncMock(return_value=gdelt_resp)
+            MockGdelt.return_value = gdelt_inst
+
+            from backend.scheduler.jobs import refresh_all_watch_zones
+            await refresh_all_watch_zones(app)
+
+        # Gaza errored, Ukraine and Sudan should still have been stored
+        assert "Gaza" not in refreshed
+        assert "Ukraine" in refreshed
+        assert "Sudan" in refreshed
+
+    async def test_no_sleep_when_only_one_zone_refreshed(self) -> None:
+        """No sleep when only one zone needs a live refresh."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from backend.api.schemas import AlertResponse
+
+        zones = ["Gaza", "Ukraine"]
+        app = self._make_app()
+
+        gdelt_resp = MagicMock()
+        gdelt_resp.articles = []
+        gdelt_resp.aggregate_tone = 0.0
+        app.state.alert_generator.generate.return_value = self._make_alert_output()
+
+        fresh_alert = MagicMock(spec=AlertResponse)
+
+        async def fake_cached(db_path, region, days=1):
+            # Only Gaza is stale; Ukraine is fresh.
+            return None if region == "Gaza" else fresh_alert
+
+        with (
+            patch("backend.scheduler.jobs.settings") as mock_settings,
+            patch("backend.scheduler.jobs.store.get_cached_alert", side_effect=fake_cached),
+            patch("backend.scheduler.jobs.store.upsert_alert", AsyncMock()),
+            patch("backend.scheduler.jobs.GdeltCloudConnector") as MockCloud,
+            patch("backend.scheduler.jobs.GdeltConnector") as MockGdelt,
+            patch("backend.scheduler.jobs.score_severity", return_value=self._make_severity_result()),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            mock_settings.WATCH_ZONES = zones
+            mock_settings.GDELT_CLOUD_ALIASES = {}
+            mock_settings.NO_FATALITIES_FILTER_COUNTRIES = set()
+
+            cloud_inst = AsyncMock()
+            cloud_inst.fetch_events = AsyncMock(return_value=[])
+            MockCloud.return_value = cloud_inst
+
+            gdelt_inst = AsyncMock()
+            gdelt_inst.fetch_articles = AsyncMock(return_value=gdelt_resp)
+            MockGdelt.return_value = gdelt_inst
+
+            from backend.scheduler.jobs import refresh_all_watch_zones
+            await refresh_all_watch_zones(app)
+
+        mock_sleep.assert_not_called()
