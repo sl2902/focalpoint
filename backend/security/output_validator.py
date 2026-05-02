@@ -30,6 +30,11 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 # Matches any http/https URL with at least one non-whitespace character after.
 _URL_RE = re.compile(r"^https?://\S+$")
 
+# Matches bare-domain URLs with no article path — e.g. https://reuters.com or
+# https://reuters.com/.  These are valid citations but low quality because they
+# point to a homepage rather than a specific article.
+_BARE_DOMAIN_RE = re.compile(r"^https?://[^/]+/?$")
+
 # Matches GDELT Cloud event IDs: start with "conflict_" followed by word chars/hyphens.
 # Example: conflict_20260423_001
 _GDELT_CLOUD_ID_RE = re.compile(r"^conflict_[\w\-]+$")
@@ -70,8 +75,9 @@ class WatchZone(BaseModel):
 
 
 class Citation(BaseModel):
-    id: str          # GDELT Cloud event ID (e.g. "conflict_50be6d52") or URL
-    description: str # Human-readable: "Armed Clash — Gaza City, 2026-04-22 (5 fatalities)"
+    id: str               # GDELT Cloud event ID (e.g. "conflict_50be6d52") or URL
+    description: str      # Human-readable: "Armed Clash — Gaza City, 2026-04-22 (5 fatalities)"
+    low_quality_url: bool = False  # True when id is a bare domain with no article path
 
 
 class AlertOutput(BaseModel):
@@ -103,6 +109,12 @@ class AlertOutput(BaseModel):
                 or _HISTORICAL_SOURCE_RE.match(citation.id)
                 or _FALLBACK_RE.match(citation.id)
             ):
+                if _BARE_DOMAIN_RE.match(citation.id):
+                    citation = citation.model_copy(update={"low_quality_url": True})
+                    logger.warning(
+                        f"output_validator: bare domain citation {citation.id!r}"
+                        " — flagged low_quality_url=True (no article path)"
+                    )
                 valid.append(citation)
             else:
                 logger.warning(

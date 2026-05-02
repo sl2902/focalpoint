@@ -120,6 +120,8 @@ def _extract_grounding_urls(response) -> list[tuple[str, str]]:
         metadata = getattr(candidates[0], "grounding_metadata", None)
         if not metadata:
             return []
+        # grounding_chunks holds real publisher URLs; web_search_queries holds
+        # the text queries used for search and is not a source of URLs.
         chunks = getattr(metadata, "grounding_chunks", None) or []
         result: list[tuple[str, str]] = []
         for chunk in chunks:
@@ -128,8 +130,13 @@ def _extract_grounding_urls(response) -> list[tuple[str, str]]:
                 continue
             uri = getattr(web, "uri", None)
             title = getattr(web, "title", None) or uri
-            if uri and "vertexaisearch.cloud.google.com" not in uri:
-                result.append((uri, str(title)))
+            if not uri or "vertexaisearch.cloud.google.com" in uri:
+                continue
+            if re.match(r"^https?://[^/]+/?$", uri):
+                logger.debug(f"grounding: bare domain URI in chunk — {uri!r} (no article path)")
+            else:
+                logger.debug(f"grounding: chunk uri={uri!r}")
+            result.append((uri, str(title)))
         logger.debug(f"grounding: extracted {len(result)} real URLs from metadata")
         return result
     except Exception as exc:

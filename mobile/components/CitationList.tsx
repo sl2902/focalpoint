@@ -27,25 +27,35 @@ function classify(id: string): CitationKind {
 
 function CitationRow({ citation, isLast }: { citation: Citation; isLast: boolean }) {
   const kind = classify(citation.id);
+  const isLowQuality = kind === 'link' && citation.low_quality_url === true;
 
-  const icon =
-    kind === 'link'      ? <Ionicons name="link-outline" size={14} color="#2563eb" /> :
-    kind === 'grounding' ? <Ionicons name="earth-outline" size={14} color="#d1d5db" /> :
-                           <Ionicons name="document-text-outline" size={14} color="#9ca3af" />;
+  const icon = isLowQuality
+    ? <Ionicons name="warning-outline" size={14} color="#d97706" />
+    : kind === 'link'
+    ? <Ionicons name="link-outline" size={14} color="#2563eb" />
+    : kind === 'grounding'
+    ? <Ionicons name="earth-outline" size={14} color="#d1d5db" />
+    : <Ionicons name="document-text-outline" size={14} color="#9ca3af" />;
 
   const inner = (
     <View style={styles.row}>
       <View style={styles.iconCol}>{icon}</View>
-      <Text
-        style={[
-          styles.description,
-          kind === 'link'      && styles.descriptionLink,
-          kind === 'grounding' && styles.descriptionMuted,
-        ]}
-        numberOfLines={3}
-      >
-        {citation.description}
-      </Text>
+      <View style={styles.textCol}>
+        <Text
+          style={[
+            styles.description,
+            kind === 'link'      && !isLowQuality && styles.descriptionLink,
+            kind === 'link'      && isLowQuality  && styles.descriptionLowQuality,
+            kind === 'grounding' && styles.descriptionMuted,
+          ]}
+          numberOfLines={3}
+        >
+          {citation.description}
+        </Text>
+        {isLowQuality && (
+          <Text style={styles.lowQualityHint}>Source URL may be incomplete</Text>
+        )}
+      </View>
     </View>
   );
 
@@ -109,8 +119,10 @@ const styles = StyleSheet.create({
     width: 16,
     alignItems: 'center',
   },
-  description: {
+  textCol: {
     flex: 1,
+  },
+  description: {
     fontSize: 13,
     color: '#374151',
     lineHeight: 18,
@@ -118,8 +130,16 @@ const styles = StyleSheet.create({
   descriptionLink: {
     color: '#2563eb',
   },
+  descriptionLowQuality: {
+    color: '#d97706',
+  },
   descriptionMuted: {
     color: '#9ca3af',
+  },
+  lowQualityHint: {
+    fontSize: 11,
+    color: '#d97706',
+    marginTop: 2,
   },
   divider: {
     height: StyleSheet.hairlineWidth,

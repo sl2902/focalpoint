@@ -9,8 +9,9 @@ export type Severity =
   | 'INSUFFICIENT_DATA';
 
 export interface Citation {
-  id: string;          // GDELT Cloud event ID (conflict_*), URL, or CPJ/RSF identifier
-  description: string; // Human-readable citation label, always in English
+  id: string;                  // GDELT Cloud event ID (conflict_*), URL, or CPJ/RSF identifier
+  description: string;         // Human-readable citation label, always in English
+  low_quality_url?: boolean;   // true when id is a bare domain with no article path
 }
 
 export interface AlertResponse {

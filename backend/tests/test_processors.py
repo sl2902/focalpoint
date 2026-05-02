@@ -1193,6 +1193,73 @@ class TestGemmaClientSemaphore:
 
 
 # ---------------------------------------------------------------------------
+# Citation low_quality_url flagging
+# ---------------------------------------------------------------------------
+
+
+class TestCitationLowQualityUrl:
+    """validate_output must flag bare-domain citation IDs with low_quality_url=True
+    while still accepting them (not stripping them)."""
+
+    def test_bare_domain_https_flagged(self) -> None:
+        from backend.security.output_validator import validate_output
+        raw = _valid_alert_dict(
+            source_citations=[{"id": "https://reuters.com", "description": "Reuters"}]
+        )
+        result = validate_output(raw, _REGION)
+        assert len(result.source_citations) == 1
+        assert result.source_citations[0].id == "https://reuters.com"
+        assert result.source_citations[0].low_quality_url is True
+
+    def test_bare_domain_with_trailing_slash_flagged(self) -> None:
+        from backend.security.output_validator import validate_output
+        raw = _valid_alert_dict(
+            source_citations=[{"id": "https://bbc.co.uk/", "description": "BBC"}]
+        )
+        result = validate_output(raw, _REGION)
+        assert result.source_citations[0].low_quality_url is True
+
+    def test_full_article_url_not_flagged(self) -> None:
+        from backend.security.output_validator import validate_output
+        raw = _valid_alert_dict(
+            source_citations=[{
+                "id": "https://reuters.com/world/ukraine/some-article-2026",
+                "description": "Reuters article",
+            }]
+        )
+        result = validate_output(raw, _REGION)
+        assert result.source_citations[0].low_quality_url is False
+
+    def test_cpj_citation_not_flagged(self) -> None:
+        from backend.security.output_validator import validate_output
+        raw = _valid_alert_dict(
+            source_citations=[{"id": "CPJ:Ukraine-2026", "description": "CPJ data"}]
+        )
+        result = validate_output(raw, _REGION)
+        assert result.source_citations[0].low_quality_url is False
+
+    def test_low_quality_default_false_on_normal_citation(self) -> None:
+        from backend.security.output_validator import Citation
+        c = Citation(id="conflict_abc123", description="Test event")
+        assert c.low_quality_url is False
+
+    def test_mixed_citations_only_bare_domain_flagged(self) -> None:
+        from backend.security.output_validator import validate_output
+        raw = _valid_alert_dict(
+            source_citations=[
+                {"id": "https://aljazeera.com", "description": "Al Jazeera"},
+                {"id": "https://aljazeera.com/news/2026/specific-article", "description": "AJ article"},
+                {"id": "CPJ:Gaza-2026", "description": "CPJ data"},
+            ]
+        )
+        result = validate_output(raw, _REGION)
+        assert len(result.source_citations) == 3
+        assert result.source_citations[0].low_quality_url is True   # bare domain
+        assert result.source_citations[1].low_quality_url is False  # full path
+        assert result.source_citations[2].low_quality_url is False  # CPJ
+
+
+# ---------------------------------------------------------------------------
 # GemmaClient grounding URL replacement — vertexaisearch redirect fix
 # ---------------------------------------------------------------------------
 
