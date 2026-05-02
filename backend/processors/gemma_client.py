@@ -327,7 +327,9 @@ class GemmaClient:
                         raw_dict = _extract_json(ws_text)
                         result = validate_output(raw_dict, region)
                         # Replace internal Vertex redirect URLs with real publisher URLs.
-                        if ws_grounding_urls and any(
+                        # grounding_urls may be empty if metadata was absent — still
+                        # re-structure so the model falls back to CPJ/RSF citations.
+                        if any(
                             "vertexaisearch.cloud.google.com" in c.id
                             for c in result.source_citations
                         ):
@@ -369,15 +371,18 @@ class GemmaClient:
         result = validate_output(raw_dict, region)
 
         # When web search was active and the model embedded internal Vertex
-        # redirect URLs (which expire quickly), replace them with the real
-        # publisher URLs extracted from the grounding metadata.
-        if use_web_search and grounding_urls and any(
+        # redirect URLs (which expire quickly), replace them with real publisher
+        # URLs from grounding metadata. If metadata was absent (grounding_urls=[]),
+        # still re-structure so the model falls back to CPJ/RSF citations rather
+        # than storing expiring redirect URLs.
+        if use_web_search and any(
             "vertexaisearch.cloud.google.com" in c.id
             for c in result.source_citations
         ):
             logger.info(
                 f"gemma_client: vertexaisearch redirect URLs detected"
-                f" — re-structuring citations with real URLs for region={region!r}"
+                f" — re-structuring citations for region={region!r}"
+                f" (grounding_urls={'present' if grounding_urls else 'absent'})"
             )
             return self._structure_web_response(raw_text, region, grounding_urls)
 
