@@ -1428,3 +1428,108 @@ class TestGemmaClientGroundingUrlReplacement:
             client.generate_alert("prompt", _REGION, use_web_search=True)
 
         mock_struct.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_redirect_url
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRedirectUrl:
+    """Unit tests for the redirect URL resolution helper."""
+
+    def _make_http_mock(self, final_url: str):
+        """Return a mock httpx.Client context manager whose HEAD response
+        has the given final URL."""
+        mock_response = MagicMock()
+        mock_response.url = final_url
+
+        mock_http_client = MagicMock()
+        mock_http_client.head.return_value = mock_response
+        mock_http_client.__enter__ = MagicMock(return_value=mock_http_client)
+        mock_http_client.__exit__ = MagicMock(return_value=False)
+        return mock_http_client
+
+    def test_follows_redirect_to_real_publisher_url(self) -> None:
+        """Redirect URL that resolves to a real publisher URL is returned."""
+        from backend.processors.gemma_client import _resolve_redirect_url
+
+        real_url = "https://reuters.com/world/middle-east/article-2026"
+        mock_http = self._make_http_mock(real_url)
+        with patch("backend.processors.gemma_client.httpx.Client", return_value=mock_http):
+            result = _resolve_redirect_url(
+                "https://vertexaisearch.cloud.google.com/grounding-api-redirect/FAKE"
+            )
+
+        assert result == real_url
+
+    def test_returns_original_url_on_exception(self) -> None:
+        """Any exception during resolution returns the original URL unchanged."""
+        from backend.processors.gemma_client import _resolve_redirect_url
+
+        original = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/FAKE"
+        with patch(
+            "backend.processors.gemma_client.httpx.Client",
+            side_effect=Exception("connection refused"),
+        ):
+            result = _resolve_redirect_url(original)
+
+        assert result == original
+
+    def test_returns_original_when_redirect_stays_on_vertexai(self) -> None:
+        """If the redirect destination is still a vertexaisearch URL, return original."""
+        from backend.processors.gemma_client import _resolve_redirect_url
+
+        original = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/FAKE"
+        mock_http = self._make_http_mock(
+            "https://vertexaisearch.cloud.google.com/other-path"
+        )
+        with patch("backend.processors.gemma_client.httpx.Client", return_value=mock_http):
+            result = _resolve_redirect_url(original)
+
+        assert result == original
+
+    def test_redirect_url_resolved_in_citations_when_grounding_absent(self) -> None:
+        """When use_web_search=True, grounding metadata absent, and citations contain
+        redirect URLs, _resolve_redirect_url is called per redirect citation and the
+        resolved URL replaces the redirect URL in the returned AlertOutput."""
+        real_url = "https://apnews.com/article/palestine-journalists-2026"
+
+        with (
+            patch("backend.processors.gemma_client.genai.Client") as mock_client_cls,
+            patch("backend.processors.gemma_client._extract_grounding_urls", return_value=[]),
+            patch(
+                "backend.processors.gemma_client._resolve_redirect_url",
+                return_value=real_url,
+            ) as mock_resolve,
+        ):
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            mock_client.models.generate_content.return_value = _mock_genai_response(
+                _vertex_alert_dict()
+            )
+
+            client = GemmaClient(api_key="fake-key")
+            result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        mock_resolve.assert_called_once_with(_VERTEX_URL)
+        assert result.source_citations[0].id == real_url
+
+    def test_non_redirect_citations_not_modified(self) -> None:
+        """Citations that are not vertexaisearch URLs are left untouched."""
+        with (
+            patch("backend.processors.gemma_client.genai.Client") as mock_client_cls,
+            patch("backend.processors.gemma_client._extract_grounding_urls", return_value=[]),
+            patch("backend.processors.gemma_client._resolve_redirect_url") as mock_resolve,
+        ):
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+            mock_client.models.generate_content.return_value = _mock_genai_response(
+                _real_url_alert_dict()
+            )
+
+            client = GemmaClient(api_key="fake-key")
+            result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        mock_resolve.assert_not_called()
+        assert result.source_citations[0].id == _REAL_URL

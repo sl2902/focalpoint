@@ -147,6 +147,25 @@ def _extract_grounding_urls(response) -> list[tuple[str, str]]:
         return []
 
 
+def _resolve_redirect_url(url: str, timeout: float = 4.0) -> str:
+    """Follow a vertexaisearch redirect URL and return the final publisher URL.
+
+    Sends a HEAD request (enough to obtain the Location header chain without
+    downloading the response body). Returns the original URL on any failure so
+    callers can always safely use the result.
+    """
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.head(url)
+        final_url = str(response.url)
+        if "vertexaisearch.cloud.google.com" not in final_url:
+            return final_url
+        return url
+    except Exception as exc:
+        logger.debug(f"grounding: redirect resolution failed for {url[:80]!r} — {exc}")
+        return url
+
+
 def _extract_json(raw_text: str) -> dict:
     """
     Strip optional markdown fences and parse the remaining text as JSON.
@@ -439,10 +458,21 @@ class GemmaClient:
             "vertexaisearch.cloud.google.com" in c.id
             for c in result.source_citations
         ):
-            logger.debug(
-                f"gemma_client: vertexaisearch redirect URLs detected but grounding"
-                f" metadata absent — accepting as-is for region={region!r}"
+            logger.info(
+                f"gemma_client: grounding metadata absent for region={region!r}"
+                f" — resolving redirect URLs directly"
             )
+            resolved_citations = []
+            for citation in result.source_citations:
+                if "vertexaisearch.cloud.google.com" in citation.id:
+                    resolved = _resolve_redirect_url(citation.id)
+                    if resolved != citation.id:
+                        logger.debug(
+                            f"grounding: resolved redirect → {resolved!r}"
+                        )
+                        citation = citation.model_copy(update={"id": resolved})
+                resolved_citations.append(citation)
+            result = result.model_copy(update={"source_citations": resolved_citations})
 
         if result.severity == "INSUFFICIENT_DATA":
             logger.warning(
