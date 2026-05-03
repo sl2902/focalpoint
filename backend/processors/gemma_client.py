@@ -363,9 +363,11 @@ class GemmaClient:
                         raw_dict = _extract_json(ws_text)
                         result = validate_output(raw_dict, region)
                         # Replace internal Vertex redirect URLs with real publisher URLs.
-                        # grounding_urls may be empty if metadata was absent — still
-                        # re-structure so the model falls back to CPJ/RSF citations.
-                        if any(
+                        # Only restructure when we have real URLs to inject; without
+                        # them the structuring call makes an extra API request for no
+                        # gain and risks a timeout. Redirect URLs pass through and are
+                        # rendered as greyed-out non-clickable items in the mobile UI.
+                        if ws_grounding_urls and any(
                             "vertexaisearch.cloud.google.com" in c.id
                             for c in result.source_citations
                         ):
@@ -407,20 +409,28 @@ class GemmaClient:
         result = validate_output(raw_dict, region)
 
         # When web search was active and the model embedded internal Vertex
-        # redirect URLs (which expire quickly), replace them with real publisher
-        # URLs from grounding metadata. If metadata was absent (grounding_urls=[]),
-        # still re-structure so the model falls back to CPJ/RSF citations rather
-        # than storing expiring redirect URLs.
-        if use_web_search and any(
+        # redirect URLs, replace them with real publisher URLs from grounding
+        # metadata. Only restructure when real URLs are available — without them
+        # the structuring call is an extra API round-trip that risks a timeout
+        # and gains nothing. Redirect URLs that slip through are rendered as
+        # greyed-out non-clickable items by the mobile CitationList component.
+        if use_web_search and grounding_urls and any(
             "vertexaisearch.cloud.google.com" in c.id
             for c in result.source_citations
         ):
             logger.info(
                 f"gemma_client: vertexaisearch redirect URLs detected"
-                f" — re-structuring citations for region={region!r}"
-                f" (grounding_urls={'present' if grounding_urls else 'absent'})"
+                f" — re-structuring citations with real URLs for region={region!r}"
             )
             return self._structure_web_response(raw_text, region, grounding_urls)
+        if use_web_search and not grounding_urls and any(
+            "vertexaisearch.cloud.google.com" in c.id
+            for c in result.source_citations
+        ):
+            logger.debug(
+                f"gemma_client: vertexaisearch redirect URLs detected but grounding"
+                f" metadata absent — accepting as-is for region={region!r}"
+            )
 
         if result.severity == "INSUFFICIENT_DATA":
             logger.warning(
