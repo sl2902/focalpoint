@@ -570,6 +570,35 @@ class TestGemmaClient:
         assert _WEB_SEARCH_GENERATION_CONFIG.response_schema is None
 
     @patch("backend.processors.gemma_client.genai.Client")
+    def test_web_search_config_max_output_tokens(self, mock_client_cls):
+        """Web search config must have max_output_tokens=2048 so grounding tool
+        calls don't exhaust the budget before the model generates response text."""
+        from backend.processors.gemma_client import _WEB_SEARCH_GENERATION_CONFIG
+        assert _WEB_SEARCH_GENERATION_CONFIG.max_output_tokens == 2048
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_max_tokens_with_web_search_returns_fallback_no_retry(self, mock_client_cls):
+        """When use_web_search=True and finish_reason=MAX_TOKENS, no retry is
+        attempted (retrying with same token budget won't help) and INSUFFICIENT_DATA
+        is returned. Only one generate_content call must be made."""
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        empty_resp = MagicMock()
+        empty_resp.text = ""
+        candidate = MagicMock()
+        candidate.finish_reason.__str__ = lambda self: "FinishReason.MAX_TOKENS"
+        candidate.safety_ratings = []
+        empty_resp.candidates = [candidate]
+        mock_client.models.generate_content.return_value = empty_resp
+
+        client = GemmaClient(api_key="fake-key")
+        result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        assert result.severity == "INSUFFICIENT_DATA"
+        assert mock_client.models.generate_content.call_count == 1
+
+    @patch("backend.processors.gemma_client.genai.Client")
     def test_partial_invalid_citations_stripped_and_alert_returned(self, mock_client_cls):
         """One valid + one invalid citation → alert returned with only the valid citation."""
         mock_client = MagicMock()

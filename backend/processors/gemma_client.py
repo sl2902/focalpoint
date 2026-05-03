@@ -91,9 +91,12 @@ _GENERATION_CONFIG = genai_types.GenerateContentConfig(
 
 # Web search config: same temperature but includes the Google Search grounding
 # tool. response_mime_type is omitted — it is incompatible with tool use.
+# 2048 tokens: grounding tool calls consume a significant share of the budget
+# before the model starts generating the response text; 1024 was too low and
+# caused MAX_TOKENS on high-activity regions (e.g. Palestine, Syria).
 _WEB_SEARCH_GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
-    max_output_tokens=1024,
+    max_output_tokens=2048,
     tools=[{"google_search": {}}],
 )
 
@@ -336,9 +339,12 @@ class GemmaClient:
                     f"gemma_client: empty response from model for region={region!r}"
                 )
 
-            # Only retry with web search config for genuine safety filter blocks
-            # (finish_reason SAFETY or unknown). MAX_TOKENS means the budget was
-            # too small — not a content block — so web search won't help.
+            # Two retry branches based on finish_reason and whether web search
+            # was already active:
+            #   safety block (use_web_search=False): retry with web search config
+            #   MAX_TOKENS (use_web_search=True):    token budget exhausted by tool
+            #       calls — retrying with the same config won't help; return fallback
+            #       and let the next scheduler cycle try again with a fresh connection.
             is_safety_block = "MAX_TOKENS" not in finish_reason
             if not use_web_search and is_safety_block:
                 logger.info(
@@ -380,6 +386,12 @@ class GemmaClient:
                         f"gemma_client: web search retry failed for region={region!r}"
                         f" — {type(exc).__name__}: {exc}"
                     )
+
+            elif use_web_search and not is_safety_block:
+                logger.warning(
+                    f"gemma_client: MAX_TOKENS with web search for region={region!r}"
+                    f" — tool calls exhausted the token budget; returning fallback"
+                )
 
             return _fallback(region)
 
