@@ -39,7 +39,7 @@ async def refresh_all_watch_zones(app) -> None:  # noqa: ANN001
             continue
 
         if not first_refresh:
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
         first_refresh = False
 
         logger.info(f"scheduler: refreshing {region!r}")

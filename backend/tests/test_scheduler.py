@@ -388,7 +388,7 @@ class TestRefreshAllWatchZones:
 
         # 3 zones refreshed → sleep called exactly twice (between 1→2 and 2→3)
         assert mock_sleep.call_count == 2
-        mock_sleep.assert_called_with(5)
+        mock_sleep.assert_called_with(10)
 
     async def test_error_in_one_zone_does_not_stop_others(self) -> None:
         """An exception during one zone's refresh must not prevent subsequent zones."""

@@ -604,10 +604,10 @@ class TestGemmaClient:
 
     @patch("backend.processors.gemma_client.genai.Client")
     def test_timeout_set_on_client(self, mock_client_cls):
-        """genai.Client must be constructed with http_options timeout=120_000 (milliseconds)."""
+        """genai.Client must be constructed with http_options timeout=180_000 (milliseconds)."""
         GemmaClient(api_key="fake-key")
         _, kwargs = mock_client_cls.call_args
-        assert kwargs.get("http_options") == {"timeout": 120_000}
+        assert kwargs.get("http_options") == {"timeout": 180_000}
 
     @patch("backend.processors.gemma_client.genai.Client")
     def test_remote_protocol_error_retries_once(self, mock_client_cls):
@@ -628,8 +628,11 @@ class TestGemmaClient:
         assert mock_client.models.generate_content.call_count == 2
 
     @patch("backend.processors.gemma_client.genai.Client")
-    def test_remote_protocol_error_retry_also_fails_returns_fallback(self, mock_client_cls):
-        """RemoteProtocolError on both attempts → fallback INSUFFICIENT_DATA returned."""
+    def test_remote_protocol_error_retry_also_fails_tries_web_search_then_fallback(
+        self, mock_client_cls
+    ):
+        """RemoteProtocolError on both normal attempts → web search config tried
+        as third attempt → if that also fails, INSUFFICIENT_DATA fallback returned."""
         import httpx as _httpx
 
         mock_client = MagicMock()
@@ -637,6 +640,7 @@ class TestGemmaClient:
         mock_client.models.generate_content.side_effect = [
             _httpx.RemoteProtocolError("peer closed connection"),
             _httpx.RemoteProtocolError("peer closed connection again"),
+            RuntimeError("web search also failed"),
         ]
 
         client = GemmaClient(api_key="fake-key")
@@ -644,7 +648,33 @@ class TestGemmaClient:
 
         assert result.severity == "INSUFFICIENT_DATA"
         assert result.source_citations[0].id == "FALLBACK:api-error"
-        assert mock_client.models.generate_content.call_count == 2
+        assert mock_client.models.generate_content.call_count == 3
+
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_remote_protocol_error_retry_rpe_web_search_succeeds(self, mock_client_cls):
+        """RemoteProtocolError on both normal attempts → web search config succeeds
+        → _structure_web_response called and its result returned."""
+        import httpx as _httpx
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+
+        ws_mock_response = _mock_genai_response(_valid_alert_dict())
+        ws_mock_response.text = "Some grounded prose about the region."
+        mock_client.models.generate_content.side_effect = [
+            _httpx.RemoteProtocolError("peer closed connection"),
+            _httpx.RemoteProtocolError("peer closed connection again"),
+            ws_mock_response,
+        ]
+
+        client = GemmaClient(api_key="fake-key")
+        structured = AlertOutput.model_validate(_valid_alert_dict())
+        with patch.object(client, "_structure_web_response", return_value=structured) as mock_struct:
+            result = client.generate_alert("prompt", _REGION)
+
+        mock_struct.assert_called_once()
+        assert result.severity == "RED"
+        assert mock_client.models.generate_content.call_count == 3
 
     @patch("backend.processors.gemma_client.genai.Client")
     def test_generate_alert_multimodal_builds_content_list(self, mock_client_cls):

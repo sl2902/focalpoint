@@ -164,7 +164,13 @@ class GemmaClient:
 
     def __init__(self, api_key: str | None = None) -> None:
         key = api_key or settings.GOOGLE_AI_STUDIO_API_KEY
-        self._client = genai.Client(api_key=key, http_options={"timeout": 120_000})  # milliseconds
+        self._client = genai.Client(
+            api_key=key,
+            # HttpOptions.timeout is in milliseconds. 180 000 ms = 180 s covers
+            # both connect and read phases; the genai SDK does not expose them
+            # separately through HttpOptions.
+            http_options={"timeout": 180_000},
+        )
 
     def generate_alert(
         self,
@@ -254,6 +260,29 @@ class GemmaClient:
                     contents=contents,
                     config=config,
                 )
+            except httpx.RemoteProtocolError as exc2:
+                # Retry also disconnected — try web search config which omits
+                # response_schema and may avoid the same server-side issue.
+                logger.warning(
+                    f"gemma_client: RemoteProtocolError retry also failed for"
+                    f" region={region!r} — trying web search config: {exc2}"
+                )
+                try:
+                    ws_response = self._client.models.generate_content(
+                        model=_BACKEND_MODEL,
+                        contents=contents,
+                        config=_WEB_SEARCH_GENERATION_CONFIG,
+                    )
+                    ws_text = ws_response.text
+                    if ws_text:
+                        ws_grounding_urls = _extract_grounding_urls(ws_response)
+                        return self._structure_web_response(ws_text, region, ws_grounding_urls)
+                except Exception as exc3:
+                    logger.warning(
+                        f"gemma_client: web search fallback after RemoteProtocolError"
+                        f" also failed for region={region!r} — {type(exc3).__name__}: {exc3}"
+                    )
+                return _fallback(region)
             except Exception as exc2:
                 logger.warning(
                     f"gemma_client: retry after RemoteProtocolError failed for"
