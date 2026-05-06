@@ -103,7 +103,7 @@ export default function FeedScreen() {
   const isEmpty = feedItems.length === 0 && !refreshing;
 
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
+    <View style={{ flex: 1, backgroundColor: '#f9fafb', paddingTop: insets.top }}>
       {/* Header */}
       <View style={styles.header}>
         <View>
@@ -121,6 +121,8 @@ export default function FeedScreen() {
         }}
         renderItem={renderItem}
         scrollEnabled={true}
+        keyboardShouldPersistTaps="handled"
+        bounces={true}
         style={styles.flatList}
         refreshControl={
           <RefreshControl

@@ -17,6 +17,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Pressable,
+  TouchableOpacity,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -102,6 +103,9 @@ export default function AlertDetailScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
+      <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+        <Text style={styles.backArrow}>←</Text>
+      </TouchableOpacity>
       {isOld && <CachedBanner lastFetchedAt={fetchedAt} />}
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.regionRow}>
@@ -183,6 +187,8 @@ export default function AlertDetailScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
+  backBtn: { padding: 16 },
+  backArrow: { fontSize: 24, color: '#111827' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   notFound: { fontSize: 15, color: '#9ca3af' },
   scroll: { padding: 16, paddingBottom: 32 },

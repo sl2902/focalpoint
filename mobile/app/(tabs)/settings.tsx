@@ -15,9 +15,10 @@ import {
   View,
   Text,
   TextInput,
+  TouchableOpacity,
   Switch,
-  ScrollView,
   Pressable,
+  ScrollView,
   StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -60,8 +61,9 @@ export default function SettingsScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <ScrollView contentContainerStyle={styles.scroll}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#f9fafb' }}>
+    <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40 }} bounces={true}>
+    <View>
         <Text style={styles.title}>Settings</Text>
 
         {/* Watch Zone */}
@@ -178,15 +180,15 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        <View style={styles.bottomSpacer} />
-      </ScrollView>
+    </View>
+    </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f9fafb' },
-  scroll: { padding: 16 },
+  scroll: { paddingHorizontal: 16, paddingBottom: 16 },
   title: { fontSize: 22, fontWeight: '700', color: '#111827', marginBottom: 16 },
   sectionHeader: {
     fontSize: 13,
@@ -299,5 +301,4 @@ const styles = StyleSheet.create({
   aboutVersion: { fontSize: 14, fontWeight: '700', color: '#111827' },
   aboutDescription: { fontSize: 13, color: '#6b7280', marginTop: 3, lineHeight: 18 },
 
-  bottomSpacer: { height: 24 },
 });

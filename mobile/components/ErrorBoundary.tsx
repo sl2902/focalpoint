@@ -1,4 +1,5 @@
 import React from 'react';
+import { View } from 'react-native';
 
 interface Props {
   fallback: React.ReactNode;
@@ -18,6 +19,6 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   render() {
     if (this.state.hasError) return this.props.fallback;
-    return this.props.children;
+    return <View style={{ flex: 1 }}>{this.props.children}</View>;
   }
 }
