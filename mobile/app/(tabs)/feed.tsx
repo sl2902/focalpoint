@@ -7,7 +7,7 @@ import {
   StyleSheet,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertCard } from '../../components/AlertCard';
 import { EmptyRegionCard } from '../../components/EmptyRegionCard';
 import { FallbackCard } from '../../components/FallbackCard';
@@ -29,6 +29,7 @@ type FeedItem =
 
 export default function FeedScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { alerts, days, refresh, refreshing, revalidate } = useAlerts();
   const { refreshingRegion } = useRefreshStore();
   const [loadingRegion, setLoadingRegion] = useState<string | null>(null);
@@ -102,7 +103,7 @@ export default function FeedScreen() {
   const isEmpty = feedItems.length === 0 && !refreshing;
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
         <View>
@@ -119,6 +120,8 @@ export default function FeedScreen() {
           return `${item.type}:${item.data.region}`;
         }}
         renderItem={renderItem}
+        scrollEnabled={true}
+        style={styles.flatList}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -126,7 +129,7 @@ export default function FeedScreen() {
             tintColor="#2563eb"
           />
         }
-        contentContainerStyle={[styles.list, isEmpty && styles.listEmpty]}
+        contentContainerStyle={[styles.listContent, isEmpty && styles.listEmpty]}
         ListEmptyComponent={
           <View style={styles.emptyState}>
             <Text style={styles.emptyIcon}>📡</Text>
@@ -139,7 +142,7 @@ export default function FeedScreen() {
           </View>
         }
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -161,7 +164,8 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 13, color: '#6b7280', marginTop: 2 },
   timeLabel: { fontSize: 12, color: '#6b7280', fontWeight: '500' },
 
-  list: { paddingVertical: 8 },
+  flatList: { flex: 1 },
+  listContent: { paddingVertical: 8 },
   listEmpty: { flex: 1 },
 
   emptyState: {

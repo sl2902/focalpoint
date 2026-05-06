@@ -1,8 +1,12 @@
+import React from 'react';
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { ErrorBoundary } from '../../components/ErrorBoundary';
+import { MapFallback } from '../../components/MapFallback';
 
 export default function TabLayout() {
   return (
+    <ErrorBoundary fallback={<MapFallback />}>
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: '#1d4ed8',
@@ -66,5 +70,6 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+    </ErrorBoundary>
   );
 }

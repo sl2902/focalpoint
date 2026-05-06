@@ -1,17 +1,29 @@
 import React, { useRef, useEffect } from 'react';
 import { Pressable, View, StyleSheet, Animated } from 'react-native';
-import { Map, Camera, Marker } from '@maplibre/maplibre-react-native';
+// Type-only import — erased at compile time, never triggers TurboModuleRegistry.
+import type * as MapLibreModule from '@maplibre/maplibre-react-native';
 import { SEVERITY_COLORS } from '../constants/severity';
+import { MapFallback } from './MapFallback';
 import type { ComponentMarker } from '../types/map';
 
 const TILE_STYLE = 'https://demotiles.maplibre.org/style.json';
+
+// require() instead of static import so the TurboModuleRegistry throw is caught
+// here rather than crashing the module factory and leaving default=undefined for
+// React.lazy. If MLRNCameraModule is absent the component renders MapFallback.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+let _maplibre: typeof MapLibreModule | null = null;
+try {
+  _maplibre = require('@maplibre/maplibre-react-native');
+} catch {
+  // MLRNCameraModule not registered in this binary.
+}
 
 interface Props {
   markers: ComponentMarker[];
   onMarkerPress: (marker: ComponentMarker) => void;
 }
 
-// Pulsing halo ring for CRITICAL markers only.
 function PulsingMarker({ color }: { color: string }) {
   const scale = useRef(new Animated.Value(1)).current;
   const opacity = useRef(new Animated.Value(0.7)).current;
@@ -47,6 +59,12 @@ function PulsingMarker({ color }: { color: string }) {
 }
 
 export default function MapViewNative({ markers, onMarkerPress }: Props) {
+  if (!_maplibre) {
+    return <MapFallback />;
+  }
+
+  const { Map, Camera, Marker } = _maplibre;
+
   return (
     <Map style={styles.map} mapStyle={TILE_STYLE}>
       <Camera

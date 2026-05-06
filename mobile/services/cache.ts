@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 import * as SQLite from 'expo-sqlite';
 import type { AlertResponse } from '../types/api';
 
@@ -18,7 +19,9 @@ const mem: Record<string, AlertResponse> = {};
 
 // ── Native: SQLite ──────────────────────────────────────────────────────────
 
-const DB_NAME = 'focalpoint.db';
+// Explicit path keeps the database in the app's sandbox document directory,
+// well outside Metro's file watcher scope.
+const DB_NAME = `${FileSystem.documentDirectory}SQLite/focalpoint.db`;
 
 // Promise-based singleton: concurrent callers await the same promise instead
 // of each opening their own connection and racing on schema setup.

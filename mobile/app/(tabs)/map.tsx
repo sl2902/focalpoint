@@ -3,13 +3,28 @@ import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import MapView from '../../components/MapView';
+import { ErrorBoundary } from '../../components/ErrorBoundary';
+import { MapFallback } from '../../components/MapFallback';
 import { isFallback, getLatestAlertsByDays } from '../../services/cache';
 import { useSettingsStore } from '../../store/useSettingsStore';
 import { WATCH_ZONES, WATCH_ZONE_COORDS } from '../../constants/watchZones';
 import { SEVERITY_COLORS, SEVERITY_BG_COLORS } from '../../constants/severity';
 import type { AlertResponse } from '../../types/api';
 import type { ComponentMarker } from '../../types/map';
+
+// Lazy-load MapView with two safety layers:
+//   .then() — if the module resolved but default is undefined (Metro caught the
+//              TurboModuleRegistry throw and left exports empty), swap in the fallback.
+//   .catch() — if the import Promise itself rejects, swap in the fallback.
+// MapView.native.tsx also handles the null-maplibre case internally, so in the
+// normal build the lazy load succeeds and MapViewNative renders MapFallback itself.
+type MapViewProps = { markers: ComponentMarker[]; onMarkerPress: (marker: ComponentMarker) => void };
+function MapViewFallback(_props: MapViewProps) { return <MapFallback />; }
+const LazyMapView = React.lazy(() =>
+  import('../../components/MapView')
+    .then((mod) => (typeof mod?.default === 'function' ? mod : { default: MapViewFallback }))
+    .catch(() => ({ default: MapViewFallback }))
+);
 
 const LEGEND_ITEMS = [
   { key: 'GREEN',             color: SEVERITY_COLORS.GREEN,    label: 'Safe'     },
@@ -132,7 +147,11 @@ export default function MapScreen() {
       </View>
 
       <View style={styles.mapContainer}>
-        <MapView markers={markers} onMarkerPress={handleMarkerPress} />
+        <ErrorBoundary fallback={<MapFallback />}>
+          <React.Suspense fallback={null}>
+            <LazyMapView markers={markers} onMarkerPress={handleMarkerPress} />
+          </React.Suspense>
+        </ErrorBoundary>
 
         {/* Severity legend — bottom-right overlay */}
         <View style={styles.legend} pointerEvents="none">

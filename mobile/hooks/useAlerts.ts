@@ -1,16 +1,22 @@
 /**
  * Feed data hook.
  *
- * Network policy (one call only):
- *   On first mount (app launch), fires GET /alerts/feed once to seed
- *   local SQLite from the backend cache. All subsequent reads are local.
+ * Data flow:
+ *   useFocusEffect — reads SQLite on every focus event (covers back-navigation
+ *     from Alert Detail without a version-bump race).
+ *   useEffect([days]) — reads SQLite when the days window changes, including
+ *     while the screen is in the background.
+ *   useEffect([isConnected]) — one-time app-launch fetch that seeds SQLite
+ *     from the backend cache; reads SQLite directly after writing.
  *
- * Days change / pull-to-refresh / new data arrival:
- *   All re-read local SQLite via a single effect that depends on both
- *   `days` and `version`. The initial fetch only bumps `version` after
- *   writing to SQLite — it never calls setAlerts directly, avoiding the
- *   stale-closure bug where a days=7 capture would overwrite a days=30
- *   display after Zustand hydration restored the persisted value.
+ * Blank-screen prevention:
+ *   _alertsCache is a module-level variable that survives component remounts.
+ *   useState is initialised from _alertsCache so the feed shows existing data
+ *   immediately even if the screen remounts (e.g. iOS modal dismissal), and
+ *   the subsequent useFocusEffect read silently overwrites it with fresh data.
+ *
+ * alerts is never cleared before new data arrives — applyAlerts only
+ * overwrites once the SQLite read resolves.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -29,8 +35,12 @@ interface UseAlertsResult {
   setDays: (d: DaysOption) => Promise<void>;
   refresh: () => void;
   refreshing: boolean;
-  revalidate: () => void; // silent re-read of SQLite, no spinner
+  revalidate: () => void;
 }
+
+// Survives component remounts within the same JS runtime session.
+// Initialises useState so the feed never flashes blank on remount.
+let _alertsCache: AlertResponse[] = [];
 
 export function useAlerts(): UseAlertsResult {
   const { isConnected } = useConnectivity();
@@ -38,16 +48,18 @@ export function useAlerts(): UseAlertsResult {
   const setDays = useSettingsStore((s) => s.setDays);
   const { refreshingRegion, endRefresh } = useRefreshStore();
 
-  const [alerts, setAlerts] = useState<AlertResponse[]>([]);
+  const [alerts, setAlerts] = useState<AlertResponse[]>(_alertsCache);
   const [refreshing, setRefreshing] = useState(false);
-  // Bumped after SQLite is written so the read effect re-fires with the
-  // current days value rather than a stale closure value.
-  const [version, setVersion] = useState(0);
   const didInitialFetch = useRef(false);
 
+  // Single write point: keeps the module cache in sync with component state.
+  const applyAlerts = useCallback((cached: AlertResponse[]) => {
+    _alertsCache = cached;
+    setAlerts(cached);
+  }, []);
+
   // One-time app-launch fetch: seed local SQLite from backend cache.
-  // Does NOT call setAlerts — only writes SQLite and bumps version so
-  // the read effect below picks up the data with the live `days` value.
+  // Reads SQLite directly after writing — no version bump needed.
   useEffect(() => {
     if (didInitialFetch.current || !isConnected) return;
     didInitialFetch.current = true;
@@ -55,75 +67,83 @@ export function useAlerts(): UseAlertsResult {
     fetchFeed()
       .then(async (feed) => {
         await Promise.all(feed.map((a) => upsertAlert(a, a.days ?? 7)));
-        setVersion((v) => v + 1);
+        const cached = await getLatestAlertsByDays(days);
+        applyAlerts(cached);
       })
       .catch(() => {
-        // Network unavailable — existing SQLite data stays visible.
+        // Network unavailable — existing data stays visible.
       });
   }, [isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Single source of truth for setAlerts: re-reads SQLite whenever
-  // days changes, new data arrives (version bump), or pull-to-refresh.
+  // Re-read SQLite when the days window changes (covers background changes).
+  // applyAlerts is stable (empty deps), so this is effectively useEffect([days]).
   useEffect(() => {
     let cancelled = false;
     getLatestAlertsByDays(days).then((cached) => {
-      if (!cancelled) setAlerts(cached);
+      if (!cancelled) applyAlerts(cached);
     });
     return () => {
       cancelled = true;
     };
-  }, [days, version]);
+  }, [days, applyAlerts]);
 
-  // Re-read SQLite whenever the feed screen regains focus — catches writes
-  // made by the Alert Detail refresh button while the screen was in the background.
+  // Re-read SQLite each time the feed screen regains focus.
+  // Fires on mount (if focused) and on every back-navigation from Alert Detail.
+  // Never clears alerts — applyAlerts only overwrites once the read resolves.
   useFocusEffect(
     useCallback(() => {
-      setVersion((v) => v + 1);
-    }, []),
+      let cancelled = false;
+      getLatestAlertsByDays(days).then((cached) => {
+        if (!cancelled) applyAlerts(cached);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, [days, applyAlerts]),
   );
 
   // Background force-refresh triggered from Alert Detail.
-  // Runs in the feed hook so the fetch survives navigation back from the detail screen.
+  // Reads SQLite directly after writing so the feed reflects the new data.
   useEffect(() => {
     if (!refreshingRegion) return;
+    const region = refreshingRegion;
     let cancelled = false;
-    fetchAlertForRegion(refreshingRegion, days, true)
+
+    fetchAlertForRegion(region, days, true)
       .then(async (fresh) => {
         if (cancelled) return;
         await upsertAlert(fresh, fresh.days ?? days);
         endRefresh();
-        setVersion((v) => v + 1);
+        const cached = await getLatestAlertsByDays(days);
+        if (!cancelled) applyAlerts(cached);
       })
       .catch(() => {
         if (cancelled) return;
-        // Stamp the existing fallback's timestamp with now so the feed card
-        // reflects when the retry was last attempted, not the original failure.
-        refreshFallbackTimestamp(refreshingRegion!, days)
+        refreshFallbackTimestamp(region, days)
           .catch(() => {})
-          .finally(() => {
+          .finally(async () => {
             endRefresh();
-            setVersion((v) => v + 1);
+            const cached = await getLatestAlertsByDays(days);
+            if (!cancelled) applyAlerts(cached);
           });
       });
+
     return () => {
       cancelled = true;
     };
   }, [refreshingRegion, days]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const revalidate = useCallback(() => {
-    setVersion((v) => v + 1);
-  }, []);
+    getLatestAlertsByDays(days).then(applyAlerts);
+  }, [days, applyAlerts]);
 
-  // Pull-to-refresh: bump version to re-read SQLite. No network call.
   const refresh = useCallback(() => {
     if (refreshing) return;
     setRefreshing(true);
-    setVersion((v) => v + 1);
-    // setRefreshing(false) after the SQLite read completes.
-    // We approximate this with a short timeout since the read effect
-    // runs asynchronously and has no callback channel back here.
-    setTimeout(() => setRefreshing(false), 300);
-  }, [refreshing]);
+    getLatestAlertsByDays(days)
+      .then(applyAlerts)
+      .finally(() => setRefreshing(false));
+  }, [refreshing, days, applyAlerts]);
 
   return { alerts, days, setDays, refresh, refreshing, revalidate };
 }
