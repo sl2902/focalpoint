@@ -126,11 +126,12 @@ _TRANSCRIBE_CONFIG = genai_types.GenerateContentConfig(
 
 def _extract_grounding_urls(response) -> list[tuple[str, str]]:
     """
-    Pull real source URLs out of the grounding metadata on a Gemini response.
+    Pull source URLs out of the grounding metadata on a Gemini response.
 
-    Returns a list of (uri, title) pairs. The grounding_chunks field contains
-    the actual publisher URLs (e.g. reuters.com/...) — distinct from the
-    vertexaisearch.cloud.google.com redirect URLs the model uses internally.
+    Returns a list of (uri, title) pairs ordered as they appear in
+    grounding_chunks. Real publisher URLs (e.g. reuters.com/...) are
+    preferred; vertexaisearch.cloud.google.com redirect URIs are included
+    as fallbacks for chunks where the real URL is unavailable.
     Returns an empty list on any error or when metadata is absent.
     """
     try:
@@ -140,24 +141,34 @@ def _extract_grounding_urls(response) -> list[tuple[str, str]]:
         metadata = getattr(candidates[0], "grounding_metadata", None)
         if not metadata:
             return []
-        # grounding_chunks holds real publisher URLs; web_search_queries holds
+        # grounding_chunks holds publisher URLs; web_search_queries holds
         # the text queries used for search and is not a source of URLs.
         chunks = getattr(metadata, "grounding_chunks", None) or []
         result: list[tuple[str, str]] = []
+        n_real = n_redirect = 0
         for chunk in chunks:
             web = getattr(chunk, "web", None)
             if not web:
                 continue
             uri = getattr(web, "uri", None)
-            title = getattr(web, "title", None) or uri
-            if not uri or "vertexaisearch.cloud.google.com" in uri:
+            if not uri:
                 continue
-            if re.match(r"^https?://[^/]+/?$", uri):
-                logger.debug(f"grounding: bare domain URI in chunk — {uri!r} (no article path)")
+            title = getattr(web, "title", None) or uri
+            is_redirect = "vertexaisearch.cloud.google.com" in uri
+            if is_redirect:
+                n_redirect += 1
+                logger.debug(f"grounding: chunk redirect (no real URL) — {uri!r}")
+            elif re.match(r"^https?://[^/]+/?$", uri):
+                n_real += 1
+                logger.debug(f"grounding: chunk bare-domain uri={uri!r} (no article path)")
             else:
-                logger.debug(f"grounding: chunk uri={uri!r}")
+                n_real += 1
+                logger.debug(f"grounding: chunk real uri={uri!r}")
             result.append((uri, str(title)))
-        logger.debug(f"grounding: extracted {len(result)} real URLs from metadata")
+        logger.debug(
+            f"grounding: extracted {len(result)} URLs from metadata"
+            f" ({n_real} real, {n_redirect} redirect fallbacks)"
+        )
         return result
     except Exception as exc:
         logger.debug(f"grounding: could not extract URLs — {exc}")
@@ -181,6 +192,46 @@ def _resolve_redirect_url(url: str, timeout: float = 4.0) -> str:
     except Exception as exc:
         logger.debug(f"grounding: redirect resolution failed for {url[:80]!r} — {exc}")
         return url
+
+
+def _apply_grounding_urls_to_citations(
+    citations: list,
+    grounding_urls: list[tuple[str, str]],
+) -> list:
+    """
+    Replace vertexaisearch redirect citation IDs with real article URLs from grounding_chunks.
+
+    Iterates citations in order. For each citation whose id is a vertexaisearch
+    redirect URL, substitutes the next available real publisher URL from
+    grounding_urls (real URLs only — redirect fallbacks are skipped as
+    replacements). If real URLs are exhausted the redirect URL is kept as-is.
+    Logs both the redirect URL and the substituted real URL at DEBUG level for
+    comparison.
+    """
+    real_urls = [
+        (uri, title)
+        for uri, title in grounding_urls
+        if "vertexaisearch.cloud.google.com" not in uri
+    ]
+    real_url_iter = iter(real_urls)
+    updated = []
+    for citation in citations:
+        if "vertexaisearch.cloud.google.com" in citation.id:
+            redirect_url = citation.id
+            try:
+                real_url, _title = next(real_url_iter)
+                logger.debug(
+                    f"grounding: redirect {redirect_url!r}"
+                    f" → real {real_url!r}"
+                )
+                citation = citation.model_copy(update={"id": real_url})
+            except StopIteration:
+                logger.debug(
+                    f"grounding: no real URL available for redirect {redirect_url!r}"
+                    f" — keeping redirect as fallback"
+                )
+        updated.append(citation)
+    return updated
 
 
 def _extract_json(raw_text: str) -> dict:
@@ -404,16 +455,14 @@ class GemmaClient:
                     try:
                         raw_dict = _extract_json(ws_text)
                         result = validate_output(raw_dict, region)
-                        # Replace internal Vertex redirect URLs with real publisher URLs.
-                        # Only restructure when we have real URLs to inject; without
-                        # them the structuring call makes an extra API request for no
-                        # gain and risks a timeout. Redirect URLs pass through and are
-                        # rendered as greyed-out non-clickable items in the mobile UI.
                         if ws_grounding_urls and any(
                             "vertexaisearch.cloud.google.com" in c.id
                             for c in result.source_citations
                         ):
-                            result = self._structure_web_response(ws_text, region, ws_grounding_urls)
+                            updated = _apply_grounding_urls_to_citations(
+                                result.source_citations, ws_grounding_urls
+                            )
+                            result = result.model_copy(update={"source_citations": updated})
                         return result
                     except json.JSONDecodeError:
                         return self._structure_web_response(ws_text, region, ws_grounding_urls)
@@ -457,20 +506,18 @@ class GemmaClient:
         result = validate_output(raw_dict, region)
 
         # When web search was active and the model embedded internal Vertex
-        # redirect URLs, replace them with real publisher URLs from grounding
-        # metadata. Only restructure when real URLs are available — without them
-        # the structuring call is an extra API round-trip that risks a timeout
-        # and gains nothing. Redirect URLs that slip through are rendered as
-        # greyed-out non-clickable items by the mobile CitationList component.
+        # redirect URLs, replace them directly with real publisher URLs from
+        # grounding_chunks — no extra API round-trip needed.
         if use_web_search and grounding_urls and any(
             "vertexaisearch.cloud.google.com" in c.id
             for c in result.source_citations
         ):
             logger.info(
-                f"gemma_client: vertexaisearch redirect URLs detected"
-                f" — re-structuring citations with real URLs for region={region!r}"
+                f"gemma_client: replacing vertexaisearch redirect URLs with"
+                f" grounding chunk real URLs for region={region!r}"
             )
-            return self._structure_web_response(raw_text, region, grounding_urls)
+            updated = _apply_grounding_urls_to_citations(result.source_citations, grounding_urls)
+            result = result.model_copy(update={"source_citations": updated})
         if use_web_search and not grounding_urls and any(
             "vertexaisearch.cloud.google.com" in c.id
             for c in result.source_citations
@@ -510,6 +557,14 @@ class GemmaClient:
                     if use_web_search:
                         try:
                             result = validate_output(_extract_json(retry_text), region)
+                            if retry_grounding_urls and any(
+                                "vertexaisearch.cloud.google.com" in c.id
+                                for c in result.source_citations
+                            ):
+                                updated = _apply_grounding_urls_to_citations(
+                                    result.source_citations, retry_grounding_urls
+                                )
+                                result = result.model_copy(update={"source_citations": updated})
                         except json.JSONDecodeError:
                             result = self._structure_web_response(
                                 retry_text, region, retry_grounding_urls

@@ -55,6 +55,8 @@ within the same time window.
 **When NOT to cache:**
 - Responses backed by web search (`use_web_search=True`) — live results are time-sensitive
 - All `/transcribe` responses — audio is ephemeral and results are request-specific
+- Responses with `severity == INSUFFICIENT_DATA` — may be a transient API timeout or
+  failure; caching them would serve an error response for the full TTL window
 
 **Audio and caching:**
 Audio submissions to `/query` do not bypass the cache. Audio processing ends at

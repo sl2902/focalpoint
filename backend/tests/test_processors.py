@@ -1349,11 +1349,12 @@ def _real_url_alert_dict(**overrides) -> dict:
 class TestGemmaClientGroundingUrlReplacement:
     @patch("backend.processors.gemma_client._extract_grounding_urls")
     @patch("backend.processors.gemma_client.genai.Client")
-    def test_vertexaisearch_urls_trigger_restructuring(
+    def test_vertexaisearch_urls_replaced_directly_from_grounding_chunks(
         self, mock_client_cls, mock_extract_urls
     ) -> None:
         """When use_web_search=True and citations contain vertexaisearch redirect URLs,
-        _structure_web_response must be called to replace them with real publisher URLs."""
+        _apply_grounding_urls_to_citations must replace them with real publisher URLs
+        directly — no extra _structure_web_response API round-trip."""
         mock_client = MagicMock()
         mock_client_cls.return_value = mock_client
         mock_client.models.generate_content.return_value = _mock_genai_response(
@@ -1362,11 +1363,10 @@ class TestGemmaClientGroundingUrlReplacement:
         mock_extract_urls.return_value = [(_REAL_URL, "OSCE Ukraine safety report")]
 
         client = GemmaClient(api_key="fake-key")
-        structured = AlertOutput.model_validate(_real_url_alert_dict())
-        with patch.object(client, "_structure_web_response", return_value=structured) as mock_struct:
+        with patch.object(client, "_structure_web_response") as mock_struct:
             result = client.generate_alert("prompt", _REGION, use_web_search=True)
 
-        mock_struct.assert_called_once()
+        mock_struct.assert_not_called()
         assert result.source_citations[0].id == _REAL_URL
 
     @patch("backend.processors.gemma_client._extract_grounding_urls")

@@ -96,6 +96,13 @@ async def query(
     # journalist_query goes to Gemma 4 as context only — never used as a data API search term.
     journalist_query = sanitised.text if sanitised else f"journalist safety {region} current situation"
 
+    logger.debug(f"query: received text={journalist_query!r} region={region!r} lang={lang!r}")
+    if sanitised and sanitised.was_modified:
+        logger.debug(
+            f"query: text modified by sanitiser"
+            f" — original={text!r} sanitised={journalist_query!r}"
+        )
+
     if audio:
         audio_bytes = await audio.read()
         logger.info(
@@ -149,8 +156,10 @@ async def query(
         was_sanitised=sanitised.was_modified if sanitised else False,
     )
 
-    # Cache write — GDELT-backed responses only.
-    if not use_web_search and redis is not None:
+    # Cache write — GDELT-backed, non-fallback responses only.
+    # Never cache INSUFFICIENT_DATA: it may be an API timeout or transient failure
+    # and should not poison the cache for the next hour.
+    if not use_web_search and redis is not None and alert.severity != "INSUFFICIENT_DATA":
         key = _cache_key(region, journalist_query)
         try:
             payload = response.model_dump(mode="json")

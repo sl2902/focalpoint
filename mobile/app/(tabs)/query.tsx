@@ -79,6 +79,10 @@ export default function QueryScreen() {
   const { isRecording, audioUri, meteringLevel, startRecording, stopRecording, clearAudio } =
     useAudio();
 
+  // Always-current ref so handleSubmit reads the live input value, never a stale closure.
+  const textRef = React.useRef(text);
+  textRef.current = text;
+
   // Capture every interim result so we always have the freshest text available.
   useSpeechRecognitionEvent('result', (event) => {
     const transcript = event.results[0]?.transcript ?? '';
@@ -186,17 +190,14 @@ export default function QueryScreen() {
   };
 
   const handleSubmit = async () => {
-    if (!text.trim() && !audioUri) return;
+    const currentText = textRef.current.trim();
+    if (!currentText) return;
+    console.log('[query] sending to POST /query:', currentText);
     setLoading(true);
     setError(null);
     setResult(null);
     try {
-      const response = await postQuery({
-        region,
-        text: text.trim() || undefined,
-        language,
-        audioUri: audioUri ?? undefined,
-      });
+      const response = await postQuery({ region, text: currentText, language });
       setResult(response);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Query failed');
@@ -291,10 +292,10 @@ export default function QueryScreen() {
         {/* Submit */}
         <Pressable
           onPress={handleSubmit}
-          disabled={loading || transcribing || isRecording || (!text.trim() && !audioUri)}
+          disabled={loading || transcribing || isRecording || !text.trim()}
           style={({ pressed }) => [
             styles.submitBtn,
-            (loading || transcribing || isRecording || (!text.trim() && !audioUri)) && styles.submitBtnDisabled,
+            (loading || transcribing || isRecording || !text.trim()) && styles.submitBtnDisabled,
             pressed && styles.submitBtnPressed,
           ]}
         >
@@ -334,7 +335,16 @@ export default function QueryScreen() {
             {WATCH_ZONES.map((zone) => (
               <Pressable
                 key={zone}
-                onPress={() => { setRegion(zone); setDropdownOpen(false); }}
+                onPress={() => {
+                  setRegion(zone);
+                  setDropdownOpen(false);
+                  setText('');
+                  setResult(null);
+                  setError(null);
+                  clearAudio();
+                  setUsingDeviceSpeech(false);
+                  setDeviceSpeechRunning(false);
+                }}
                 style={[styles.modalItem, region === zone && styles.modalItemActive]}
               >
                 <Text style={[styles.modalItemText, region === zone && styles.modalItemTextActive]}>

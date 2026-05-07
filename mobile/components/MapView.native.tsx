@@ -133,8 +133,8 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
 
         // Use expansion zoom directly — no fixed increment.
         const targetZoom = expansionZoom ?? Math.min(zoomRef.current + 3, MAX_ZOOM);
-        cameraRef.current?.flyTo(coords, 400);
-        cameraRef.current?.zoomTo(targetZoom, 400);
+        cameraRef.current?.flyTo({ center: coords, duration: 400 });
+        cameraRef.current?.zoomTo(targetZoom, { duration: 400 });
         zoomRef.current = targetZoom;
 
         // If exactly 1 individual point remains after expansion (others formed a
@@ -159,8 +159,8 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
       } catch {
         // getClusterExpansionZoom unavailable — aggressive fixed fallback.
         const targetZoom = Math.min(zoomRef.current + 3, MAX_ZOOM);
-        cameraRef.current?.flyTo(coords, 400);
-        cameraRef.current?.zoomTo(targetZoom, 400);
+        cameraRef.current?.flyTo({ center: coords, duration: 400 });
+        cameraRef.current?.zoomTo(targetZoom, { duration: 400 });
         zoomRef.current = targetZoom;
       }
     } else {
@@ -187,13 +187,13 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
 
   const handleZoomIn = () => {
     const next = Math.min(zoomRef.current + 1, MAX_ZOOM);
-    cameraRef.current?.zoomTo(next, 300);
+    cameraRef.current?.zoomTo(next, { duration: 300 });
     zoomRef.current = next;
   };
 
   const handleZoomOut = () => {
     const next = Math.max(zoomRef.current - 1, MIN_ZOOM);
-    cameraRef.current?.zoomTo(next, 300);
+    cameraRef.current?.zoomTo(next, { duration: 300 });
     zoomRef.current = next;
   };
 

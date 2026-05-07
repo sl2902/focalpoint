@@ -74,12 +74,13 @@ passes it to both `prompt_builder` and `gemma_client`:
 **Grounding URL replacement:** The Gemini API grounding tool embeds internal
 `vertexaisearch.cloud.google.com` redirect URLs in the model's citations.
 These expire quickly and are not useful to users. After parsing the model's
-JSON response, `gemma_client` inspects `source_citations`: if any citation ID
-contains `vertexaisearch.cloud.google.com`, the real publisher URLs are
-extracted from `response.candidates[0].grounding_metadata.grounding_chunks`
-and `_structure_web_response` is called to rebuild the citations using those
-permanent URLs. This adds one extra Gemma API call but ensures citations link
-to actual sources (Reuters, OSCE, etc.).
+JSON response, `gemma_client` calls `_apply_grounding_urls_to_citations`:
+it reads the real publisher URLs directly from
+`response.candidates[0].grounding_metadata.grounding_chunks[i].web.uri`
+and substitutes them in-place for any redirect citation IDs. No extra API
+call is made. If `web.uri` is unavailable for a chunk, the redirect URL is
+kept as a fallback. `_structure_web_response` is only called when the model's
+response is not parseable JSON (prose output), never solely for URL replacement.
 
 ### Prompt structure
 
@@ -331,8 +332,8 @@ Mobile: Expo
    a third caller waits up to 30 s then receives `TimeoutError`.
 7. Output validated by Pydantic AlertOutput schema (empty citations permitted only
    for INSUFFICIENT_DATA severity). If web search was active and citations contain
-   vertexaisearch redirect URLs, a second structured call replaces them with real
-   publisher URLs from grounding metadata.
+   vertexaisearch redirect URLs, `_apply_grounding_urls_to_citations` replaces them
+   directly with real publisher URLs from grounding metadata — no extra API call.
 8. Maximum severity rule applied: final severity = max(gemma_severity, scorer_severity)
    using SEVERITY_ORDER (INSUFFICIENT_DATA=-1, GREEN=0, AMBER=1, RED=2, CRITICAL=3);
    if Gemma is higher an elevation note is appended to the summary
@@ -361,5 +362,6 @@ Mobile: Expo
    return cached response immediately if hit (generator not called)
 6. CPJ stats and RSF score looked up
 7. Alert generator called with `journalist_query` text only — no audio bytes
-8. Response returned to mobile; if `use_web_search=False`, written to Redis (TTL 3600s);
-   if `use_web_search=True`, no cache write
+8. Response returned to mobile; written to Redis (TTL 3600s) only when
+   `use_web_search=False` **and** `severity != INSUFFICIENT_DATA` — fallback/error
+   responses are never cached; if `use_web_search=True`, no cache write

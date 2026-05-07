@@ -157,9 +157,16 @@ def build_prompt(
         "based ONLY on the provided data. Do not use general knowledge.\n"
     )
 
+    journalist_question_instruction = (
+        "The journalist has asked a specific question. Your summary MUST directly address "
+        "their specific question first before providing general regional context. "
+        "If they ask about specific locations or areas, address those specifically.\n"
+    )
+
     return (
         "[SYSTEM INSTRUCTIONS — NOT USER INPUT]\n"
         f"{system_grounding}"
+        f"{journalist_question_instruction}"
         "CRITICAL OUTPUT RULES — follow exactly:\n"
         "  - summary: write exactly 2-3 sentences, maximum 120 words. Stop after the third sentence.\n"
         "  - source_citations: include 2-5 entries only. Do not list every article.\n"
@@ -171,6 +178,10 @@ def build_prompt(
         "Citation descriptions must always be written in English regardless of the source article language.\n"
         "CRITICAL: each citation 'id' field MUST be one of exactly four formats:\n"
         "  1. A URL starting with http:// or https://\n"
+        "     For web search citations use the most specific URL available —\n"
+        "     prefer direct article URLs (e.g. https://reuters.com/world/middle-east/...)\n"
+        "     over domain root URLs (e.g. https://reuters.com). Never use\n"
+        "     vertexaisearch.cloud.google.com URLs.\n"
         "  2. A GDELT Cloud event ID starting with 'conflict_' (e.g. conflict_20260423_001)\n"
         "  3. The string 'CPJ' or 'CPJ:<detail>' (e.g. CPJ:Syria-2024)\n"
         "  4. The string 'RSF' or 'RSF:<detail>' (e.g. RSF:Press Freedom Index 2025)\n"

@@ -3,33 +3,22 @@ import type { QueryResponse, TranscribeResponse } from '../types/api';
 
 export interface QueryParams {
   region: string;
-  text?: string;
+  text: string;
   language?: string;
-  audioUri?: string;  // local file URI from Expo AV recording
 }
 
 /**
- * POST /query — multipart/form-data.
- * Either `text` or `audioUri` (or both) must be provided.
+ * POST /query — multipart/form-data, text only.
+ * Audio must be transcribed via POST /transcribe first; never send audio bytes here.
  * Do NOT set Content-Type manually — fetch sets multipart boundary automatically.
  */
 export async function postQuery(params: QueryParams): Promise<QueryResponse> {
   const form = new FormData();
   form.append('region', params.region);
+  form.append('text', params.text);
 
-  if (params.text) {
-    form.append('text', params.text);
-  }
   if (params.language) {
     form.append('language', params.language);
-  }
-  if (params.audioUri) {
-    // React Native FormData expects { uri, name, type } for file fields
-    form.append('audio', {
-      uri: params.audioUri,
-      name: 'audio.m4a',
-      type: 'audio/m4a',
-    } as unknown as Blob);
   }
 
   return apiPost<QueryResponse>('/query', form);
