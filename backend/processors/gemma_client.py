@@ -90,7 +90,10 @@ _GENERATION_CONFIG = genai_types.GenerateContentConfig(
 )
 
 # Web search config: same temperature but includes the Google Search grounding
-# tool. response_mime_type is omitted — it is incompatible with tool use.
+# tool. response_mime_type and response_schema are omitted — both are
+# incompatible with tool use. system_instruction replicates the schema
+# field-length constraints (summary ≤150 words, ≤5 citations) so the model
+# stays concise without the hard schema guardrails.
 # 4096 tokens: grounding tool calls consume a significant share of the budget
 # before the model starts generating the response text; 2048 was too low for
 # high-activity regions with dense news coverage (e.g. Sudan, Palestine, Syria).
@@ -98,6 +101,15 @@ _WEB_SEARCH_GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
     max_output_tokens=4096,
     tools=[{"google_search": {}}],
+    system_instruction=(
+        "You are a conflict intelligence analyst. "
+        "Respond with a single JSON object only — no markdown, no prose. "
+        "Fields: severity (GREEN|AMBER|RED|CRITICAL|INSUFFICIENT_DATA), "
+        "summary (≤150 words), "
+        "source_citations (array, ≤5 items, each with id and description ≤20 words), "
+        "region (string), timestamp (ISO-8601). "
+        "Be concise. Do not repeat information across fields."
+    ),
 )
 
 # Transcription config: plain text response, no JSON schema.
