@@ -94,12 +94,14 @@ _GENERATION_CONFIG = genai_types.GenerateContentConfig(
 # incompatible with tool use. system_instruction replicates the schema
 # field-length constraints (summary ≤150 words, ≤5 citations) so the model
 # stays concise without the hard schema guardrails.
-# 4096 tokens: grounding tool calls consume a significant share of the budget
-# before the model starts generating the response text; 2048 was too low for
-# high-activity regions with dense news coverage (e.g. Sudan, Palestine, Syria).
+# 8192 tokens: grounding tool calls + JSON response share this budget.
+# Active conflict zones (Sudan, Yemen, Palestine) can exhaust smaller limits
+# because the search tool emits several thousand tokens of results before
+# the model starts writing the JSON. Model max is 32768; 8192 is a safe
+# ceiling that leaves room for both tool output and the final response.
 _WEB_SEARCH_GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
-    max_output_tokens=4096,
+    max_output_tokens=8192,
     tools=[{"google_search": {}}],
     system_instruction=(
         "You are a conflict intelligence analyst. "
