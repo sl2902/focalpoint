@@ -1,6 +1,11 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { Platform } from 'react-native';
-import { Audio } from 'expo-av';
+import {
+  useAudioRecorder,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  RecordingPresets,
+} from 'expo-audio';
 
 interface UseAudioResult {
   isRecording: boolean;
@@ -12,7 +17,7 @@ interface UseAudioResult {
 }
 
 export function useAudio(): UseAudioResult {
-  const recordingRef = useRef<Audio.Recording | null>(null);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [isRecording, setIsRecording] = useState(false);
   const [audioUri, setAudioUri] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -21,31 +26,25 @@ export function useAudio(): UseAudioResult {
     if (Platform.OS === 'web') return;
     setError(null);
     try {
-      const { granted } = await Audio.requestPermissionsAsync();
+      const { granted } = await requestRecordingPermissionsAsync();
       if (!granted) {
         setError('Microphone permission denied');
         return;
       }
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-      });
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY,
-      );
-      recordingRef.current = recording;
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
       setIsRecording(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Recording failed');
     }
-  }, []);
+  }, [recorder]);
 
   const stopRecording = useCallback(async (): Promise<string | null> => {
-    if (Platform.OS === 'web' || !recordingRef.current) return null;
+    if (Platform.OS === 'web') return null;
     try {
-      await recordingRef.current.stopAndUnloadAsync();
-      const uri = recordingRef.current.getURI();
-      recordingRef.current = null;
+      await recorder.stop();
+      const uri = recorder.uri;
       setIsRecording(false);
       setAudioUri(uri ?? null);
       return uri ?? null;
@@ -54,7 +53,7 @@ export function useAudio(): UseAudioResult {
       setIsRecording(false);
       return null;
     }
-  }, []);
+  }, [recorder]);
 
   const clearAudio = useCallback(() => {
     setAudioUri(null);

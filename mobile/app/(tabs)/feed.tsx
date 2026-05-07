@@ -59,8 +59,8 @@ export default function FeedScreen() {
     setLoadingRegion(region);
     try {
       const fresh = await fetchAlertForRegion(region, days);
-      await upsertAlert(fresh, fresh.days ?? days);
-      revalidate();
+      await upsertAlert(fresh, days);
+      await revalidate();
     } catch {
       // Card stays empty — user can retry.
     } finally {

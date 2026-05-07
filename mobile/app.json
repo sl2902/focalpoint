@@ -37,8 +37,8 @@
       "expo-router",
       "expo-sqlite",
       "expo-secure-store",
-      "expo-av",
-      "@maplibre/maplibre-react-native"
+      "@maplibre/maplibre-react-native",
+      "expo-audio"
     ]
   }
 }

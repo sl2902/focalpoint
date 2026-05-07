@@ -13,7 +13,7 @@
     "@maplibre/maplibre-react-native": "^11.0.2",
     "@react-native-community/netinfo": "11.4.1",
     "expo": "~54.0.33",
-    "expo-av": "~16.0.8",
+    "expo-audio": "~1.1.1",
     "expo-dev-client": "~6.0.21",
     "expo-file-system": "~19.0.22",
     "expo-haptics": "~15.0.8",

@@ -29,7 +29,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#fff' }}>
       <SafeAreaProvider>
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#fff' } }}>
-          <Stack.Screen name="(tabs)" options={{ contentStyle: { flex: 1, backgroundColor: '#fff' }, gestureEnabled: false }} />
+          <Stack.Screen name="(tabs)" options={{ title: 'FocalPoint', contentStyle: { flex: 1, backgroundColor: '#fff' }, gestureEnabled: false }} />
           <Stack.Screen
             name="alert/[id]"
             options={{ presentation: 'modal', headerShown: true, title: 'Alert Detail' }}

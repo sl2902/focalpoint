@@ -35,7 +35,7 @@ interface UseAlertsResult {
   setDays: (d: DaysOption) => Promise<void>;
   refresh: () => void;
   refreshing: boolean;
-  revalidate: () => void;
+  revalidate: () => Promise<void>;
 }
 
 // Survives component remounts within the same JS runtime session.
@@ -66,7 +66,7 @@ export function useAlerts(): UseAlertsResult {
 
     fetchFeed()
       .then(async (feed) => {
-        await Promise.all(feed.map((a) => upsertAlert(a, a.days ?? 7)));
+        await Promise.all(feed.map((a) => upsertAlert(a, days)));
         const cached = await getLatestAlertsByDays(days);
         applyAlerts(cached);
       })
@@ -133,8 +133,8 @@ export function useAlerts(): UseAlertsResult {
     };
   }, [refreshingRegion, days]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const revalidate = useCallback(() => {
-    getLatestAlertsByDays(days).then(applyAlerts);
+  const revalidate = useCallback((): Promise<void> => {
+    return getLatestAlertsByDays(days).then(applyAlerts);
   }, [days, applyAlerts]);
 
   const refresh = useCallback(() => {
