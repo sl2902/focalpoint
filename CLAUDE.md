@@ -104,3 +104,42 @@ docs/
 - No user input ever reaches data APIs or Gemma 4 unvalidated
 - Do not bundle multiple unrelated changes in one commit
 - Run pytest after every backend change before moving on
+
+## Current Status (May 8, 2026)
+
+### Backend — Complete (430+ tests)
+- GDELT Cloud + Doc, CPJ, RSF connectors
+- Severity scoring with historical floor and max severity rule
+- Gemma 4 26B via Google AI Studio API for alerts
+- Local Gemma 4 E4B via Transformers for audio transcription (MPS on Apple Silicon)
+- Background scheduler, SQLite cache, FastAPI routes
+- Web search fallback via Gemma 4 when GDELT Doc fails
+
+### Mobile — In Progress
+- Feed screen — working, shows all 9 watch zones
+- Alert Detail — working, back button, refresh
+- Map screen — MapLibre native working, clustering, zoom controls pending
+- Settings screen — working, scroll fixed
+- Query screen — voice transcription working (E4B local), text query working
+- Voice UX — mic meter pending, audio chip UX fix pending
+
+### Pending
+- Ollama local inference for 26B alerts
+- Cloud Run deployment
+- Demo video recording
+- Kaggle writeup
+
+### Context for future sessions
+- Gemma E4B model weights are downloaded and cached locally on the dev machine;
+  /transcribe works without re-downloading. On a fresh machine, first startup
+  will trigger a multi-GB download — expect delay before 503 clears.
+- Audio architecture is intentionally split: /transcribe handles audio (local E4B
+  or 503); /query receives text only and is cacheable. Never merge these paths.
+- GDELT Cloud: Iran, Sudan, Myanmar, Yemen, Syria need has_fatalities filter
+  omitted — see NO_FATALITIES_FILTER_COUNTRIES in config.py; they return 0
+  results otherwise.
+- On-device E2B/E4B inference in the mobile app is planned but not implemented.
+  The architecture doc describes it but no mobile code exists for it yet.
+- Show a plan before implementing non-trivial changes — user preference confirmed
+  across multiple sessions.
+- uv only, never pip — enforced; requirements.txt must never be created.
