@@ -571,10 +571,10 @@ class TestGemmaClient:
 
     @patch("backend.processors.gemma_client.genai.Client")
     def test_web_search_config_max_output_tokens(self, mock_client_cls):
-        """Web search config must have max_output_tokens=2048 so grounding tool
+        """Web search config must have max_output_tokens=4096 so grounding tool
         calls don't exhaust the budget before the model generates response text."""
         from backend.processors.gemma_client import _WEB_SEARCH_GENERATION_CONFIG
-        assert _WEB_SEARCH_GENERATION_CONFIG.max_output_tokens == 2048
+        assert _WEB_SEARCH_GENERATION_CONFIG.max_output_tokens == 4096
 
     @patch("backend.processors.gemma_client.genai.Client")
     def test_max_tokens_with_web_search_returns_fallback_no_retry(self, mock_client_cls):

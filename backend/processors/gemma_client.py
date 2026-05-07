@@ -91,12 +91,12 @@ _GENERATION_CONFIG = genai_types.GenerateContentConfig(
 
 # Web search config: same temperature but includes the Google Search grounding
 # tool. response_mime_type is omitted — it is incompatible with tool use.
-# 2048 tokens: grounding tool calls consume a significant share of the budget
-# before the model starts generating the response text; 1024 was too low and
-# caused MAX_TOKENS on high-activity regions (e.g. Palestine, Syria).
+# 4096 tokens: grounding tool calls consume a significant share of the budget
+# before the model starts generating the response text; 2048 was too low for
+# high-activity regions with dense news coverage (e.g. Sudan, Palestine, Syria).
 _WEB_SEARCH_GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
-    max_output_tokens=2048,
+    max_output_tokens=4096,
     tools=[{"google_search": {}}],
 )
 
