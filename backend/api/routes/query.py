@@ -41,6 +41,7 @@ from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
 from backend.ingestion.gdeltcloud_connector import GdeltCloudConnector
 from backend.processors.alert_generator import AlertGenerator
+from backend.processors.local_transcriber import TranscriptionUnavailableError, get_local_transcriber
 from backend.security.rate_limiter import QUERY_RATE_LIMIT, limiter
 from backend.security.sanitiser import sanitise_query
 
@@ -92,20 +93,20 @@ async def query(
     region = region.title()
 
     sanitised = sanitise_query(text) if text else None
-    query_text = sanitised.text if sanitised else f"journalist safety {region} current situation"
+    # journalist_query goes to Gemma 4 as context only — never used as a data API search term.
+    journalist_query = sanitised.text if sanitised else f"journalist safety {region} current situation"
 
-    audio_bytes: bytes | None = None
-    audio_mime_type: str | None = None
     if audio:
         audio_bytes = await audio.read()
-        audio_mime_type = audio.content_type or "audio/wav"
         logger.info(
-            f"query: audio input received for region={region!r}"
-            f" size={len(audio_bytes)}B mime={audio_mime_type!r} lang={lang!r}"
+            f"query: audio field received but ignored for generation"
+            f" size={len(audio_bytes)}B — transcription handled by /transcribe"
         )
 
+    # GDELT Doc API search is always region-scoped, not journalist-question-scoped.
+    gdelt_search_term = f"conflict {region}"
     events = await gdelt_cloud.fetch_events(region)
-    gdelt_resp = await gdelt.fetch_articles(query_text)
+    gdelt_resp = await gdelt.fetch_articles(gdelt_search_term)
     cpj_stats = cpj.get_country_stats(region)
     rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
@@ -115,11 +116,10 @@ async def query(
         f"query: region={region!r} gdelt_articles={len(gdelt_resp.articles)}"
         f" use_web_search={use_web_search}"
     )
-    audio_provided = audio_bytes is not None
 
-    # Cache check — only for text-only, GDELT-backed responses.
-    if not use_web_search and not audio_provided and redis is not None:
-        key = _cache_key(region, query_text)
+    # Cache check — GDELT-backed responses only; audio no longer affects generation.
+    if not use_web_search and redis is not None:
+        key = _cache_key(region, journalist_query)
         try:
             cached = await redis.get(key)
             if cached:
@@ -137,9 +137,7 @@ async def query(
         cpj_stats=cpj_stats,
         rsf_score=rsf_score,
         region=region,
-        journalist_query=query_text,
-        audio_bytes=audio_bytes,
-        audio_mime_type=audio_mime_type,
+        journalist_query=journalist_query,
     )
 
     response = QueryResponse(
@@ -151,9 +149,9 @@ async def query(
         was_sanitised=sanitised.was_modified if sanitised else False,
     )
 
-    # Cache write — only for text-only, GDELT-backed responses.
-    if not use_web_search and not audio_provided and redis is not None:
-        key = _cache_key(region, query_text)
+    # Cache write — GDELT-backed responses only.
+    if not use_web_search and redis is not None:
+        key = _cache_key(region, journalist_query)
         try:
             payload = response.model_dump(mode="json")
             await redis.setex(key, _CACHE_TTL, json.dumps(payload))
@@ -170,9 +168,12 @@ async def transcribe(
     request: Request,
     audio: Annotated[UploadFile, File()],
     language: Annotated[str | None, Form(pattern=r"^[a-z]{2}$")] = None,
-    generator: AlertGenerator = Depends(get_alert_generator),
 ) -> TranscribeResponse:
-    """Transcribe an audio file and return the text for display in the mobile query field."""
+    """Transcribe an audio file using the local Gemma 4 E4B model.
+
+    Returns HTTP 503 if the local model is unavailable — the mobile client
+    should fall back to device-native speech recognition in that case.
+    """
     lang = _resolve_language(language, request)
     audio_bytes = await audio.read()
     mime_type = audio.content_type or "audio/wav"
@@ -180,5 +181,10 @@ async def transcribe(
         f"transcribe: audio received size={len(audio_bytes)}B"
         f" mime={mime_type!r} lang={lang!r}"
     )
-    text = generator.transcribe(audio_bytes, mime_type, lang)
+    try:
+        local = get_local_transcriber()
+        text = local.transcribe(audio_bytes, mime_type, lang)
+    except TranscriptionUnavailableError as exc:
+        logger.warning(f"transcribe: local model unavailable — {exc}")
+        raise HTTPException(status_code=503, detail="local_transcription_unavailable")
     return TranscribeResponse(text=text, language=lang)

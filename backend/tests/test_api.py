@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -455,8 +455,8 @@ class TestPostQuery:
             "GREEN", "AMBER", "RED", "CRITICAL", "INSUFFICIENT_DATA"
         }
 
-    def test_fetch_articles_called_with_sanitised_query_text(self, tmp_db_path: str) -> None:
-        """gdelt.fetch_articles must receive the sanitised query text, not the region."""
+    def test_fetch_articles_called_with_conflict_region_term(self, tmp_db_path: str) -> None:
+        """gdelt.fetch_articles must receive 'conflict {region}', not the journalist's question."""
         mock_gdelt = _mock_gdelt()
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
         app.dependency_overrides[get_gdelt_connector] = lambda: mock_gdelt
@@ -469,9 +469,8 @@ class TestPostQuery:
 
         mock_gdelt.fetch_articles.assert_called_once()
         call_arg = mock_gdelt.fetch_articles.call_args.args[0]
-        assert call_arg == self._VALID_BODY["text"]
-        assert call_arg != "Gaza"
-        assert not call_arg.startswith("conflict ")
+        assert call_arg == "conflict Gaza"
+        assert call_arg != self._VALID_BODY["text"]
 
     def test_audio_only_returns_200(self, tmp_db_path: str) -> None:
         """Audio-only query (no text) must return 200 and a valid response."""
@@ -495,8 +494,9 @@ class TestPostQuery:
         body = resp.json()
         assert body["severity"] in {"GREEN", "AMBER", "RED", "CRITICAL", "INSUFFICIENT_DATA"}
 
-    def test_audio_query_passes_bytes_to_generator(self, tmp_db_path: str) -> None:
-        """When audio is provided, generator.generate must receive audio_bytes and mime_type."""
+    def test_audio_field_ignored_for_generation(self, tmp_db_path: str) -> None:
+        """Audio bytes submitted to /query are logged and discarded — not passed to the generator.
+        Transcription is handled exclusively by the /transcribe endpoint."""
         mock_gen = MagicMock()
         mock_gen.generate = MagicMock(return_value=_ALERT_OUTPUT)
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
@@ -504,6 +504,7 @@ class TestPostQuery:
         app.dependency_overrides[get_cpj_connector] = _mock_cpj
         app.dependency_overrides[get_alert_generator] = lambda: mock_gen
         app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        app.dependency_overrides[get_redis] = lambda: None  # disable cache so generate is always called
         audio_bytes = b"fake-audio-data"
         with TestClient(app) as c:
             c.post(
@@ -514,11 +515,11 @@ class TestPostQuery:
         app.dependency_overrides.clear()
 
         _, kwargs = mock_gen.generate.call_args
-        assert kwargs.get("audio_bytes") == audio_bytes
-        assert kwargs.get("audio_mime_type") == "audio/wav"
+        assert "audio_bytes" not in kwargs or kwargs.get("audio_bytes") is None
+        assert "audio_mime_type" not in kwargs or kwargs.get("audio_mime_type") is None
 
-    def test_audio_query_not_cached(self, tmp_db_path: str) -> None:
-        """Audio queries must never be written to the Redis cache."""
+    def test_audio_query_cached_same_as_text(self, tmp_db_path: str) -> None:
+        """Audio submissions no longer bypass the cache — audio is ignored for generation."""
         mock_redis = AsyncMock()
         mock_redis.get = AsyncMock(return_value=None)
         mock_redis.setex = AsyncMock()
@@ -532,13 +533,13 @@ class TestPostQuery:
         with TestClient(app) as c:
             c.post(
                 "/query",
-                data={"region": "Gaza"},
+                data={"region": "Gaza", "text": "Is it safe?"},
                 files={"audio": ("clip.wav", audio_bytes, "audio/wav")},
                 headers={"device_id": "test-audio-cache"},
             )
         app.dependency_overrides.clear()
 
-        mock_redis.setex.assert_not_called()
+        mock_redis.setex.assert_called_once()
 
     def test_accept_language_header_used_when_language_not_set(self, tmp_db_path: str) -> None:
         """Accept-Language header must be used as language when the form field is absent."""
@@ -566,74 +567,99 @@ class TestPostQuery:
 
 
 class TestPostTranscribe:
-    def _setup(self, tmp_db_path: str, transcribe_return: str = "Is it safe to travel north?"):
-        mock_gen = MagicMock()
-        mock_gen.transcribe = MagicMock(return_value=transcribe_return)
-        app.dependency_overrides[get_alert_generator] = lambda: mock_gen
-        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
-        return mock_gen
+    def _mock_transcriber(self, transcribe_return: str = "Is it safe to travel north?") -> MagicMock:
+        mock_local = MagicMock()
+        mock_local.transcribe = MagicMock(return_value=transcribe_return)
+        return mock_local
 
     def test_returns_200_with_audio(self, tmp_db_path: str) -> None:
-        self._setup(tmp_db_path)
-        with TestClient(app) as c:
-            resp = c.post(
-                "/transcribe",
-                files={"audio": ("clip.wav", b"fake-audio", "audio/wav")},
-                headers={"device_id": "test-transcribe"},
-            )
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        mock_local = self._mock_transcriber()
+        with patch("backend.api.routes.query.get_local_transcriber", return_value=mock_local):
+            with TestClient(app) as c:
+                resp = c.post(
+                    "/transcribe",
+                    files={"audio": ("clip.wav", b"fake-audio", "audio/wav")},
+                    headers={"device_id": "test-transcribe"},
+                )
         app.dependency_overrides.clear()
         assert resp.status_code == 200
 
     def test_response_has_text_and_language(self, tmp_db_path: str) -> None:
-        self._setup(tmp_db_path, transcribe_return="Is it safe to travel north?")
-        with TestClient(app) as c:
-            resp = c.post(
-                "/transcribe",
-                files={"audio": ("clip.wav", b"fake-audio", "audio/wav")},
-                headers={"device_id": "test-transcribe-fields"},
-            )
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        mock_local = self._mock_transcriber("Is it safe to travel north?")
+        with patch("backend.api.routes.query.get_local_transcriber", return_value=mock_local):
+            with TestClient(app) as c:
+                resp = c.post(
+                    "/transcribe",
+                    files={"audio": ("clip.wav", b"fake-audio", "audio/wav")},
+                    headers={"device_id": "test-transcribe-fields"},
+                )
         app.dependency_overrides.clear()
         body = resp.json()
         assert "text" in body
         assert "language" in body
         assert body["text"] == "Is it safe to travel north?"
 
-    def test_transcribe_passes_audio_bytes_to_generator(self, tmp_db_path: str) -> None:
-        """generator.transcribe must receive the exact audio bytes from the upload."""
-        mock_gen = self._setup(tmp_db_path)
+    def test_transcribe_passes_audio_bytes_to_local(self, tmp_db_path: str) -> None:
+        """local_transcriber.transcribe must receive the exact audio bytes from the upload."""
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        mock_local = self._mock_transcriber()
         audio_bytes = b"real-audio-content"
-        with TestClient(app) as c:
-            c.post(
-                "/transcribe",
-                files={"audio": ("clip.wav", audio_bytes, "audio/wav")},
-                headers={"device_id": "test-transcribe-bytes"},
-            )
+        with patch("backend.api.routes.query.get_local_transcriber", return_value=mock_local):
+            with TestClient(app) as c:
+                c.post(
+                    "/transcribe",
+                    files={"audio": ("clip.wav", audio_bytes, "audio/wav")},
+                    headers={"device_id": "test-transcribe-bytes"},
+                )
         app.dependency_overrides.clear()
-        args, kwargs = mock_gen.transcribe.call_args
+        args, _ = mock_local.transcribe.call_args
         assert args[0] == audio_bytes
         assert args[1] == "audio/wav"
 
     def test_accept_language_header_sets_language(self, tmp_db_path: str) -> None:
-        """Accept-Language header must be passed as the language hint to generator.transcribe."""
-        mock_gen = self._setup(tmp_db_path)
-        with TestClient(app) as c:
-            c.post(
-                "/transcribe",
-                files={"audio": ("clip.wav", b"fake", "audio/wav")},
-                headers={"Accept-Language": "ar", "device_id": "test-transcribe-lang"},
-            )
+        """Accept-Language header must be passed as the language hint to local_transcriber."""
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        mock_local = self._mock_transcriber()
+        with patch("backend.api.routes.query.get_local_transcriber", return_value=mock_local):
+            with TestClient(app) as c:
+                c.post(
+                    "/transcribe",
+                    files={"audio": ("clip.wav", b"fake", "audio/wav")},
+                    headers={"Accept-Language": "ar", "device_id": "test-transcribe-lang"},
+                )
         app.dependency_overrides.clear()
         # transcribe(audio_bytes, mime_type, language) — language is args[2]
-        assert mock_gen.transcribe.call_args.args[2] == "ar"
+        assert mock_local.transcribe.call_args.args[2] == "ar"
+
+    def test_unavailable_model_returns_503(self, tmp_db_path: str) -> None:
+        """When LocalTranscriber raises TranscriptionUnavailableError, route returns 503."""
+        from backend.processors.local_transcriber import TranscriptionUnavailableError
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        mock_local = MagicMock()
+        mock_local.transcribe.side_effect = TranscriptionUnavailableError("model not loaded")
+        with patch("backend.api.routes.query.get_local_transcriber", return_value=mock_local):
+            with TestClient(app) as c:
+                resp = c.post(
+                    "/transcribe",
+                    files={"audio": ("clip.wav", b"fake", "audio/wav")},
+                    headers={"device_id": "test-transcribe-503"},
+                )
+        app.dependency_overrides.clear()
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "local_transcription_unavailable"
 
     def test_missing_audio_returns_422(self, tmp_db_path: str) -> None:
-        self._setup(tmp_db_path)
-        with TestClient(app) as c:
-            resp = c.post(
-                "/transcribe",
-                data={"language": "en"},
-                headers={"device_id": "test-transcribe-no-audio"},
-            )
+        app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        mock_local = self._mock_transcriber()
+        with patch("backend.api.routes.query.get_local_transcriber", return_value=mock_local):
+            with TestClient(app) as c:
+                resp = c.post(
+                    "/transcribe",
+                    data={"language": "en"},
+                    headers={"device_id": "test-transcribe-no-audio"},
+                )
         app.dependency_overrides.clear()
         assert resp.status_code == 422
 

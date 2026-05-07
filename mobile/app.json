@@ -38,7 +38,14 @@
       "expo-sqlite",
       "expo-secure-store",
       "@maplibre/maplibre-react-native",
-      "expo-audio"
+      "expo-audio",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "FocalPoint needs microphone access for voice queries.",
+          "speechRecognitionPermission": "FocalPoint needs speech recognition to transcribe voice queries on-device."
+        }
+      ]
     ]
   }
 }

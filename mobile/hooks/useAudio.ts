@@ -2,14 +2,21 @@ import { useState, useCallback } from 'react';
 import { Platform } from 'react-native';
 import {
   useAudioRecorder,
+  useAudioRecorderState,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   RecordingPresets,
 } from 'expo-audio';
 
+const RECORDING_OPTIONS = {
+  ...RecordingPresets.HIGH_QUALITY,
+  isMeteringEnabled: true,
+};
+
 interface UseAudioResult {
   isRecording: boolean;
   audioUri: string | null;
+  meteringLevel: number | null;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<string | null>;
   clearAudio: () => void;
@@ -17,7 +24,9 @@ interface UseAudioResult {
 }
 
 export function useAudio(): UseAudioResult {
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorder = useAudioRecorder(RECORDING_OPTIONS);
+  // Polls recorder state every 100ms — drives metering re-renders while recording.
+  const recorderState = useAudioRecorderState(recorder, 100);
   const [isRecording, setIsRecording] = useState(false);
   const [audioUri, setAudioUri] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,5 +69,10 @@ export function useAudio(): UseAudioResult {
     setError(null);
   }, []);
 
-  return { isRecording, audioUri, startRecording, stopRecording, clearAudio, error };
+  const meteringLevel =
+    recorderState.isRecording && recorderState.metering !== undefined
+      ? recorderState.metering
+      : null;
+
+  return { isRecording, audioUri, meteringLevel, startRecording, stopRecording, clearAudio, error };
 }

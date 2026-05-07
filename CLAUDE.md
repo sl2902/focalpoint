@@ -16,10 +16,11 @@ pushing severity-graded alerts rather than waiting to be queried.
 
 ## Stack
 - Backend: Python 3.11, FastAPI, Pydantic v2, pytest, Redis, slowapi
-- Mobile: React Native, Expo SDK 52, Expo SQLite
+- Mobile: React Native, Expo SDK 54, expo-audio, expo-speech-recognition, Expo SQLite
 - AI: Gemma 4 via Gemini API (GOOGLE_AI_STUDIO_API_KEY) — model IDs:
-       gemma-4-26b-a4b-it (backend), gemma-4-31b-it (backend),
-       E2B/E4B weights downloaded for on-device use
+       gemma-4-26b-a4b-it (backend alert generation),
+       google/gemma-4-E4B-it (local transcription via transformers + MPS/CPU)
+- ML deps (backend): transformers, torch, torchvision, librosa, accelerate, pillow
 - Data: GDELT Cloud conflict events (GDELT_CLOUD_API_KEY), GDELT 2.0 Doc API
          news sentiment (no auth), CPJ local CSV at
          backend/data/cpj_incidents.csv, RSF hardcoded dict at
@@ -49,7 +50,10 @@ mobile/
 docs/
 
 ## Model Routing Strategy
-- E2B/E4B: on-device, handles quick queries and offline mode
+- E4B local (backend): voice transcription via backend/processors/local_transcriber.py
+  Loaded at startup, runs on MPS (Apple Silicon) or CPU. Returns HTTP 503 if unavailable.
+  Mobile falls back to iOS native speech recognition (expo-speech-recognition) on 503.
+- E2B/E4B on-device: handles quick queries and offline mode (planned)
 - 26B backend: complex multi-source reasoning and alert generation
 - Route based on connectivity status and query complexity
 - On-device context: max 10 GDELT Cloud events + 5 GDELT Doc API articles

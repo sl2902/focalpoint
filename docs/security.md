@@ -147,6 +147,7 @@ Applied via slowapi at FastAPI route level.
 | Endpoint | Limit | Window |
 |----------|-------|--------|
 | POST /query | 10 requests | per minute per device |
+| POST /transcribe | 10 requests | per minute per device |
 | GET /alerts/* | 30 requests | per minute per device |
 | GET /map/markers | 30 requests | per minute per device |
 

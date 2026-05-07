@@ -28,6 +28,7 @@ from backend.config import settings
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.processors.alert_generator import AlertGenerator
 from backend.processors.gemma_client import GemmaClient
+from backend.processors.local_transcriber import get_local_transcriber
 from backend.scheduler import jobs, store
 from backend.security.rate_limiter import limiter
 
@@ -55,6 +56,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     gemma_client = GemmaClient()
     app.state.alert_generator = AlertGenerator(gemma_client)
     logger.info("Alert generator ready")
+
+    try:
+        get_local_transcriber()
+        logger.info("Local transcriber (Gemma 4 E4B) ready")
+    except Exception as exc:
+        logger.warning(f"Local transcriber unavailable — /transcribe will return 503: {exc}")
 
     app.state.db_path = settings.ALERTS_DB_PATH
     await store.init_db(app.state.db_path)

@@ -170,9 +170,12 @@ one object.
 
 **Example query (recent conflict coverage for a region):**
 ```
-?query=conflict+journalist+Gaza&mode=artlist&maxrecords=10
+?query=conflict+Gaza&mode=artlist&maxrecords=10
 &timespan=24H&format=json
 ```
+
+Note: the search term is always `"conflict {region}"` — the journalist's question
+text is passed to Gemma 4 as context only and never used as a GDELT search term.
 
 **Pagination:**
 GDELT Doc API does not support cursor pagination natively.

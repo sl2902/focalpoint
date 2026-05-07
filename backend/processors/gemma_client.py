@@ -39,6 +39,9 @@ _GEMMA_SEM = threading.BoundedSemaphore(2)
 # Model ID for the 26B backend tier (see CLAUDE.md)
 _BACKEND_MODEL = "gemma-4-26b-a4b-it"
 
+# E4B is used for transcription — only E2B/E4B support audio input.
+_TRANSCRIBE_MODEL = "gemma-4-e4b-it"
+
 # Strip markdown code fences that the model may accidentally emit.
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
@@ -613,7 +616,7 @@ class GemmaClient:
         ]
         try:
             response = self._client.models.generate_content(
-                model=_BACKEND_MODEL,
+                model=_TRANSCRIBE_MODEL,
                 contents=contents,
                 config=_TRANSCRIBE_CONFIG,
             )

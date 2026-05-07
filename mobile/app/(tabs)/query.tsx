@@ -3,6 +3,10 @@
  *
  * Region defaults to the watch zone from Settings but can be changed
  * for a one-off query via the dropdown — it never writes back to the store.
+ *
+ * Voice transcription:
+ *   Primary path  — POST /transcribe (local Gemma 4 E4B on the backend)
+ *   Fallback path — expo-speech-recognition (iOS native, used when backend returns 503)
  */
 
 import React, { useState } from 'react';
@@ -17,14 +21,38 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from 'expo-speech-recognition';
 import { SeverityBadge } from '../../components/SeverityBadge';
 import { CitationList } from '../../components/CitationList';
 import { LoadingOverlay } from '../../components/LoadingOverlay';
 import { useAudio } from '../../hooks/useAudio';
 import { useSettingsStore } from '../../store/useSettingsStore';
-import { postQuery } from '../../services/query';
+import { postQuery, postTranscribe } from '../../services/query';
 import { WATCH_ZONES } from '../../constants/watchZones';
 import type { QueryResponse } from '../../types/api';
+
+// Maps 2-letter language code to BCP-47 tag for iOS speech recognition.
+const SPEECH_RECOGNITION_LANG: Record<string, string> = {
+  en: 'en-US',
+  ar: 'ar-SA',
+  fr: 'fr-FR',
+  tr: 'tr-TR',
+  es: 'es-ES',
+};
+
+// Per-bar sensitivity multipliers — symmetric, centre bars most responsive.
+const METER_OFFSETS = [0.55, 0.75, 0.9, 1.0, 0.9, 0.75, 0.55];
+
+/** Map dBFS (-160..0) to a bar height in px (2..24). */
+function meterBarHeight(dB: number | null, offset: number): number {
+  if (dB === null) return 2;
+  // Practical range: -60 dB (silence) to 0 dB (full). Below -60 treat as silent.
+  const normalized = Math.max(0, Math.min(1, (dB + 60) / 60));
+  return Math.max(2, Math.min(24, normalized * 24 * offset));
+}
 
 export default function QueryScreen() {
   const watchZone = useSettingsStore((s) => s.watchZone);
@@ -34,11 +62,128 @@ export default function QueryScreen() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [result, setResult] = useState<QueryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const { isRecording, audioUri, startRecording, stopRecording, clearAudio } =
+  // Fallback state — set to true when /transcribe returns 503.
+  const [usingDeviceSpeech, setUsingDeviceSpeech] = useState(false);
+  const [deviceSpeechRunning, setDeviceSpeechRunning] = useState(false);
+  // Accumulates partial transcript so we can commit it when the session ends.
+  const latestTranscriptRef = React.useRef('');
+  // Tracks when the current recording started so we can enforce minimum duration.
+  const recordingStartedAt = React.useRef(0);
+  // Ephemeral hint shown when the user releases the button too quickly.
+  const [shortRecordingHint, setShortRecordingHint] = useState<string | null>(null);
+
+  const { isRecording, audioUri, meteringLevel, startRecording, stopRecording, clearAudio } =
     useAudio();
+
+  // Capture every interim result so we always have the freshest text available.
+  useSpeechRecognitionEvent('result', (event) => {
+    const transcript = event.results[0]?.transcript ?? '';
+    latestTranscriptRef.current = transcript;
+    if (event.isFinal) {
+      setText(transcript);
+      setTranscribing(false);
+      setDeviceSpeechRunning(false);
+      console.log('[transcribe] device speech final:', transcript);
+    }
+  });
+
+  useSpeechRecognitionEvent('error', (event) => {
+    console.log('[transcribe] device speech error:', event.error);
+    setTranscribing(false);
+    setDeviceSpeechRunning(false);
+  });
+
+  // 'end' always fires after stop() — commit whatever was captured even if isFinal never came.
+  useSpeechRecognitionEvent('end', () => {
+    if (latestTranscriptRef.current) {
+      setText(latestTranscriptRef.current);
+      console.log('[transcribe] device speech end, committing:', latestTranscriptRef.current);
+      latestTranscriptRef.current = '';
+    }
+    setDeviceSpeechRunning(false);
+    setTranscribing(false);
+  });
+
+  // --- Voice button handlers ---
+
+  const handlePressIn = async () => {
+    if (usingDeviceSpeech) {
+      try {
+        console.log('[transcribe] using device speech recognition path');
+        const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+        if (!granted) {
+          console.log('[transcribe] device speech permission denied');
+          return;
+        }
+        setTranscribing(true);
+        setDeviceSpeechRunning(true);
+        const lang = SPEECH_RECOGNITION_LANG[language] ?? 'en-US';
+        latestTranscriptRef.current = '';
+        ExpoSpeechRecognitionModule.start({ lang, interimResults: true, maxAlternatives: 1 });
+      } catch (e) {
+        console.log('[transcribe] device speech failed:', String(e));
+        setTranscribing(false);
+        setDeviceSpeechRunning(false);
+      }
+    } else {
+      // Clear previous recording and text immediately so the journalist knows they're starting fresh.
+      clearAudio();
+      setText('');
+      recordingStartedAt.current = Date.now();
+      startRecording();
+    }
+  };
+
+  const handlePressOut = async () => {
+    if (usingDeviceSpeech) {
+      try {
+        ExpoSpeechRecognitionModule.stop();
+      } catch (e) {
+        console.log('[transcribe] device speech stop failed:', String(e));
+        setTranscribing(false);
+        setDeviceSpeechRunning(false);
+      }
+    } else {
+      const durationMs = Date.now() - recordingStartedAt.current;
+      console.log(`[record] recording duration: ${durationMs}ms`);
+      if (durationMs < 1000) {
+        await stopRecording();
+        clearAudio();
+        setShortRecordingHint('Hold longer to record');
+        setTimeout(() => setShortRecordingHint(null), 2500);
+        return;
+      }
+      await handleStopRecording();
+    }
+  };
+
+  const handleStopRecording = async () => {
+    const uri = await stopRecording();
+    if (!uri) return;
+    setTranscribing(true);
+    try {
+      console.log('[transcribe] trying server path (Gemma 4 E4B)');
+      const res = await postTranscribe({ audioUri: uri, language });
+      console.log('[transcribe] server path success:', res.text);
+      if (res.text) {
+        // Text confirms the recording succeeded — hide the chip.
+        setText(res.text);
+        clearAudio();
+      }
+      // Empty result: leave chip visible so journalist knows a recording exists.
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      console.log('[transcribe] server path failed, switching to device speech recognition:', msg);
+      // Keep chip visible — journalist can see the recording exists and retry.
+      setUsingDeviceSpeech(true);
+    } finally {
+      setTranscribing(false);
+    }
+  };
 
   const handleSubmit = async () => {
     if (!text.trim() && !audioUri) return;
@@ -58,6 +203,20 @@ export default function QueryScreen() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const voiceButtonLabel = () => {
+    if (deviceSpeechRunning || (usingDeviceSpeech && transcribing)) return 'Listening…';
+    if (isRecording) return 'Recording…';
+    if (transcribing) return 'Transcribing…';
+    return 'Hold for Voice';
+  };
+
+  const voiceButtonStyle = () => {
+    if (deviceSpeechRunning) return [styles.voiceBtn, styles.voiceBtnActive];
+    if (isRecording) return [styles.voiceBtn, styles.voiceBtnActive];
+    if (transcribing) return [styles.voiceBtn, styles.voiceBtnTranscribing];
+    return [styles.voiceBtn];
   };
 
   return (
@@ -87,21 +246,43 @@ export default function QueryScreen() {
           maxLength={500}
         />
 
+        {/* Device speech fallback indicator */}
+        {usingDeviceSpeech && (
+          <View style={styles.deviceSpeechPill}>
+            <Ionicons name="phone-portrait-outline" size={13} color="#1d4ed8" />
+            <Text style={styles.deviceSpeechText}>Using device speech recognition</Text>
+          </View>
+        )}
+
         {/* Voice button */}
         <Pressable
-          onPressIn={startRecording}
-          onPressOut={() => stopRecording()}
-          style={[styles.voiceBtn, isRecording && styles.voiceBtnActive]}
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          disabled={transcribing && !deviceSpeechRunning}
+          style={voiceButtonStyle()}
         >
-          <Text style={styles.voiceBtnText}>
-            {isRecording ? 'Recording…' : 'Hold for Voice'}
-          </Text>
+          <Text style={styles.voiceBtnText}>{voiceButtonLabel()}</Text>
         </Pressable>
 
-        {audioUri && (
+        {isRecording && (
+          <View style={styles.meterRow}>
+            {METER_OFFSETS.map((offset, i) => (
+              <View
+                key={i}
+                style={[styles.meterBar, { height: meterBarHeight(meteringLevel, offset) }]}
+              />
+            ))}
+          </View>
+        )}
+
+        {shortRecordingHint && (
+          <Text style={styles.shortRecordingHint}>{shortRecordingHint}</Text>
+        )}
+
+        {audioUri && !usingDeviceSpeech && (
           <View style={styles.audioPill}>
             <Text style={styles.audioPillText}>Audio recorded</Text>
-            <Pressable onPress={clearAudio}>
+            <Pressable onPress={() => { clearAudio(); setText(''); }}>
               <Text style={styles.audioRemove}>✕</Text>
             </Pressable>
           </View>
@@ -110,10 +291,10 @@ export default function QueryScreen() {
         {/* Submit */}
         <Pressable
           onPress={handleSubmit}
-          disabled={loading || (!text.trim() && !audioUri)}
+          disabled={loading || transcribing || isRecording || (!text.trim() && !audioUri)}
           style={({ pressed }) => [
             styles.submitBtn,
-            (loading || (!text.trim() && !audioUri)) && styles.submitBtnDisabled,
+            (loading || transcribing || isRecording || (!text.trim() && !audioUri)) && styles.submitBtnDisabled,
             pressed && styles.submitBtnPressed,
           ]}
         >
@@ -201,6 +382,15 @@ const styles = StyleSheet.create({
     minHeight: 80,
     textAlignVertical: 'top',
   },
+
+  deviceSpeechPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 10,
+    gap: 5,
+  },
+  deviceSpeechText: { fontSize: 12, color: '#1d4ed8' },
+
   voiceBtn: {
     marginTop: 12,
     backgroundColor: '#1d4ed8',
@@ -209,6 +399,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   voiceBtnActive: { backgroundColor: '#dc2626' },
+  voiceBtnTranscribing: { backgroundColor: '#d97706' },
   voiceBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
   audioPill: {
     flexDirection: 'row',
@@ -243,6 +434,20 @@ const styles = StyleSheet.create({
     borderColor: '#e5e7eb',
     gap: 10,
   },
+  meterRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    marginTop: 10,
+    gap: 4,
+    height: 26,
+  },
+  meterBar: {
+    width: 4,
+    borderRadius: 2,
+    backgroundColor: '#1e293b',
+  },
+  shortRecordingHint: { marginTop: 6, fontSize: 13, color: '#6b7280', textAlign: 'center' },
   sanitisedNote: { fontSize: 12, color: '#d97706', fontStyle: 'italic' },
   answer: { fontSize: 15, color: '#111827', lineHeight: 22 },
 

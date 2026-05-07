@@ -52,9 +52,10 @@ Constructs grounded prompts for Gemma 4.
 Validates Gemma 4 output before passing downstream.
 
 Files:
-- prompt_builder.py    # constructs grounded prompts with delimiters
-- gemma_client.py      # handles 26B API calls and response parsing
-- alert_generator.py   # orchestrates prompt→Gemma→max-severity reconciliation
+- prompt_builder.py      # constructs grounded prompts with delimiters
+- gemma_client.py        # handles 26B API calls and response parsing
+- alert_generator.py     # orchestrates prompt→Gemma→max-severity reconciliation
+- local_transcriber.py   # on-device ASR via Gemma 4 E4B; singleton loaded at startup
 
 ### Web search fallback
 
@@ -165,15 +166,30 @@ Rate limiting via slowapi applied at route level.
 Key endpoints:
 - GET /alerts/{region}        # latest alerts for a region
 - GET /alerts/watchzone       # alerts for journalist's pinned zone
-- POST /query                 # sanitised natural language query
+- POST /query                 # sanitised natural language query → grounded alert
+- POST /transcribe            # audio → text via local Gemma 4 E4B; returns 503 if model unavailable
 - GET /map/markers            # incident markers for map view
 - GET /health                 # deployment health check
 
+### POST /transcribe — local ASR
+
+Accepts a multipart audio file and returns the transcribed text. Audio
+processing is handled entirely by `local_transcriber.py` (Gemma 4 E4B,
+on-device via MPS/CPU). If the model is not loaded (download pending, OOM),
+returns HTTP 503 with `{"detail": "local_transcription_unavailable"}`.
+
+The mobile client falls back to iOS native speech recognition on 503. Audio
+bytes never reach the Gemini API or the alert generator — transcription is a
+separate, self-contained step.
+
 ### POST /query — caching and search-term behaviour
 
-- GDELT Doc API is queried with the **sanitised journalist query text** as the
-  search term (not the region string), so articles are directly relevant to
-  what the journalist asked.
+- GDELT Doc API is queried with `"conflict {region}"` as the search term (not
+  the journalist's question). The journalist query text is passed to Gemma 4 as
+  context only — it never drives data API lookups.
+- Audio submitted alongside a text query is logged and discarded. Transcription
+  must be performed via `/transcribe` before calling `/query`; the mobile client
+  does this automatically.
 - When GDELT data is available (`use_web_search=False`), the response is cached
   in Redis under key `query:{region}:{sha256_prefix}` with TTL 3600 seconds.
   On a cache hit the generator is bypassed entirely.
@@ -221,9 +237,14 @@ Shows one marker per watch zone (all 9 regions), coloured by severity.
   "View Full Assessment →" button that posts a message to the parent frame,
   triggering navigation to AlertDetail.
 - **Native** (`MapView.native.tsx`): MapLibre React Native + OpenStreetMap demo
-  tiles. Tapping a marker opens a bottom-sheet preview overlay (region name +
-  severity badge + "View Details →" button). Grey markers show a brief toast
-  ("No data — set as Watch Zone in Settings to load").
+  tiles. Uses `GeoJSONSource` with `cluster=true` (`clusterRadius=30`,
+  `clusterMaxZoom=6`). Cluster colour reflects the highest severity among
+  its members via `clusterProperties` max-aggregation. Tapping a cluster zooms
+  to its expansion level via `getClusterExpansionZoom`; if only one point
+  remains it auto-opens that marker's popup. Individual marker tap fires
+  `onMarkerPress` from `event.nativeEvent.features`. Home button uses
+  `fitBounds` over all 9 watch zone centres. Zoom +/− and home controls
+  overlaid top-right.
 - Severity legend overlaid bottom-right (Safe / Elevated / Active / Critical / No data).
 
 **AlertDetail** (`app/alert/[id].tsx`)
@@ -232,6 +253,19 @@ Full alert view passed via router params.
 - `[Note: …]` contextual annotations stripped from summary body and rendered
   separately as small italic text below the summary
 - Source citations capped at 5; overflow shown as "and N more sources"
+
+**Query** (`app/(tabs)/query.tsx`)
+Journalist submits a free-text or voice question against a selectable region.
+Voice recording flow:
+1. Hold mic button → expo-audio records at HIGH_QUALITY with `isMeteringEnabled: true`.
+   A 7-bar audio level meter animates at 100ms via `useAudioRecorderState` to
+   confirm the mic is capturing audio. Minimum hold time: 1 second.
+2. On release, audio is POSTed to `/transcribe` (local Gemma 4 E4B on the backend).
+   On success the transcribed text populates the question box and the chip hides.
+3. On HTTP 503 (model not loaded), the chip remains visible and the button
+   switches to iOS native speech recognition (expo-speech-recognition), shown
+   via a "Using device speech recognition" indicator.
+4. Submit POSTs text to `/query`. Audio bytes are not re-sent.
 
 **Settings** (`app/(tabs)/settings.tsx`)
 - Time window picker (1 / 3 / 7 / 14 / 30 days) — writes to `useSettingsStore`;
@@ -305,15 +339,27 @@ Mobile: Expo
 9. Final AlertResponse stored in SQLite (alerts.db) and served from cache on next request
 10. Mobile displays alert in feed and updates map marker
 
+## Data Flow for POST /transcribe
+
+1. Audio file received (multipart), language resolved from form field or Accept-Language header
+2. `get_local_transcriber()` returns singleton `LocalTranscriber` (Gemma 4 E4B, MPS/CPU)
+3. `ffmpeg -nostdin -y -v error` resamples audio to 16 kHz mono WAV
+4. `librosa.load` reads WAV into float32 numpy array; arrays < 8000 samples (0.5 s) are
+   rejected with a warning and return empty string
+5. `processor.apply_chat_template` builds an audio + ASR prompt message
+6. `model.generate` runs; `output_ids[:, input_length:]` slices off prompt tokens
+7. Decoded text returned as `TranscribeResponse`; HTTP 503 returned if model not loaded
+
 ## Data Flow for POST /query
 
 1. Journalist query received, sanitised by security.sanitiser
 2. GDELT Cloud events fetched for region
-3. GDELT Doc API queried with sanitised query text as search term
+3. GDELT Doc API queried with `"conflict {region}"` — the journalist's question
+   text is passed to Gemma 4 as context only, never used as a search term
 4. `use_web_search` computed from GDELT Doc API result
 5. If `use_web_search=False` and Redis available: check cache key `query:{region}:{hash}`;
    return cached response immediately if hit (generator not called)
 6. CPJ stats and RSF score looked up
-7. Alert generator called (web search enabled/disabled per step 4)
+7. Alert generator called with `journalist_query` text only — no audio bytes
 8. Response returned to mobile; if `use_web_search=False`, written to Redis (TTL 3600s);
    if `use_web_search=True`, no cache write

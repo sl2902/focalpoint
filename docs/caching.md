@@ -50,18 +50,16 @@ within the same time window.
 
 | Cache Key | TTL | Notes |
 |-----------|-----|-------|
-| gemma:{query_hash}:{region}:{time_bucket} | 600s | time_bucket = current hour |
-
-**Time bucketing:**
-The cache key includes the current hour (not exact timestamp).
-This means a journalist asking the same question twice within the same
-hour gets a cached response. A new hour bucket invalidates the cache,
-ensuring assessments reflect fresh data.
+| query:{region}:{sha256_prefix(journalist_query)} | 3600s | journalist query text is Gemma context, not GDELT search term |
 
 **When NOT to cache:**
-- CRITICAL severity alerts — always call model fresh
-- Queries that include real-time location coordinates
-- First query for a newly activated watch zone
+- Responses backed by web search (`use_web_search=True`) — live results are time-sensitive
+- All `/transcribe` responses — audio is ephemeral and results are request-specific
+
+**Audio and caching:**
+Audio submissions to `/query` do not bypass the cache. Audio processing ends at
+`/transcribe`; `/query` only receives text. Cache key is based on region + journalist
+query text regardless of whether the original input was voice or typed.
 
 **Implementation:**
 Check cache before building prompt. On hit, return cached response.

@@ -5,6 +5,7 @@ LogBox.ignoreLogs(['MapLibre Native [ERROR]']);
 // Type-only import — erased at compile time, never triggers TurboModuleRegistry.
 import type * as MapLibreModule from '@maplibre/maplibre-react-native';
 import { SEVERITY_COLORS } from '../constants/severity';
+import { WATCH_ZONE_COORDS } from '../constants/watchZones';
 import { MapFallback } from './MapFallback';
 import type { ComponentMarker } from '../types/map';
 import type { Severity } from '../types/api';
@@ -29,6 +30,16 @@ interface Props {
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 18;
+
+// Bounding box computed from all 9 watch zone centres: [west, south, east, north]
+const _coords = Object.values(WATCH_ZONE_COORDS);
+const ALL_ZONES_BOUNDS: [number, number, number, number] = [
+  Math.min(..._coords.map((c) => c.longitude)), // west
+  Math.min(..._coords.map((c) => c.latitude)),  // south
+  Math.max(..._coords.map((c) => c.longitude)), // east
+  Math.max(..._coords.map((c) => c.latitude)),  // north
+];
+const ALL_ZONES_PADDING = { top: 50, bottom: 50, left: 30, right: 30 };
 
 // Integer rank used for cluster severity aggregation (max wins).
 const SEVERITY_TO_ORDER: Record<Severity, number> = {
@@ -187,8 +198,10 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
   };
 
   const handleHome = () => {
-    cameraRef.current?.flyTo([35.2, 31.9], 500);
-    cameraRef.current?.zoomTo(3, 500);
+    cameraRef.current?.fitBounds(ALL_ZONES_BOUNDS, {
+      padding: ALL_ZONES_PADDING,
+      duration: 500,
+    });
     zoomRef.current = 3;
   };
 
@@ -204,7 +217,10 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
       >
         <Camera
           ref={cameraRef}
-          defaultSettings={{ centerCoordinate: [35.2, 31.9], zoomLevel: 3 }}
+          defaultSettings={{
+            bounds: ALL_ZONES_BOUNDS,
+            padding: ALL_ZONES_PADDING,
+          }}
         />
 
         <GeoJSONSource
