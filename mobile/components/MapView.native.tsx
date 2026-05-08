@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useMemo } from 'react';
+import React, { useRef, useCallback, useMemo, useEffect, useState } from 'react';
 import { TouchableOpacity, View, Text, StyleSheet, LogBox } from 'react-native';
 
 LogBox.ignoreLogs(['MapLibre Native [ERROR]']);
@@ -30,6 +30,7 @@ interface Props {
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 18;
+const HOME_ZOOM = 3;
 
 // Bounding box computed from all 9 watch zone centres: [west, south, east, north]
 const _coords = Object.values(WATCH_ZONE_COORDS);
@@ -40,6 +41,12 @@ const ALL_ZONES_BOUNDS: [number, number, number, number] = [
   Math.max(..._coords.map((c) => c.latitude)),  // north
 ];
 const ALL_ZONES_PADDING = { top: 50, bottom: 50, left: 30, right: 30 };
+
+// Midpoint of all watch zones — used as the Camera's initial centerCoordinate.
+const HOME_CENTER: [number, number] = [
+  (ALL_ZONES_BOUNDS[0] + ALL_ZONES_BOUNDS[2]) / 2,
+  (ALL_ZONES_BOUNDS[1] + ALL_ZONES_BOUNDS[3]) / 2,
+];
 
 // Integer rank used for cluster severity aggregation (max wins).
 const SEVERITY_TO_ORDER: Record<Severity, number> = {
@@ -83,10 +90,33 @@ const CLUSTER_PROPERTIES: any = {
 // Step expression: cluster radius grows with point count.
 const CLUSTER_RADIUS_EXPR: any = ['step', ['get', 'point_count'], 20, 5, 28, 10, 36];
 
+interface CameraTarget {
+  centerCoordinate: [number, number];
+  zoomLevel: number;
+  animationDuration: number;
+}
+
 export default function MapViewNative({ markers, onMarkerPress }: Props) {
-  const cameraRef = useRef<any>(null);
-  const sourceRef = useRef<any>(null);
-  const zoomRef = useRef(3);
+  // MapView ref — exposes getBounds, getZoom, queryRenderedFeatures etc.
+  // Does NOT expose setCamera in MapLibre RN 11.x.
+  const mapRef = useRef<React.ElementRef<typeof MapLibreModule.MapView> | null>(null);
+  // Camera ref — populated after the native map loads, used for diagnostics only.
+  // Navigation is driven by cameraState props, not ref calls.
+  const cameraRef = useRef<React.ElementRef<typeof MapLibreModule.Camera> | null>(null);
+  const sourceRef = useRef<React.ElementRef<typeof MapLibreModule.GeoJSONSource> | null>(null);
+  // Tracks current zoom from onRegionDidChange so zoom-in/out deltas are correct.
+  const zoomRef = useRef(HOME_ZOOM);
+
+  // State-driven camera: updating this triggers Camera to animate to the new position.
+  const [cameraState, setCameraState] = useState<CameraTarget>({
+    centerCoordinate: HOME_CENTER,
+    zoomLevel: HOME_ZOOM,
+    animationDuration: 0,
+  });
+
+  useEffect(() => {
+    console.log('[map] cameraRef on mount:', cameraRef.current);
+  }, []);
 
   // Build GeoJSON FeatureCollection from live marker data.
   // maxSeverityOrder duplicates the severity rank so clusterProperties can
@@ -123,46 +153,27 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
     const coords: [number, number] = feature?.geometry?.coordinates ?? [0, 0];
 
     if (properties?.cluster) {
-      const clusterId = properties.cluster_id;
+      // Read cluster_id directly from the tap-time event — never from a cached ref.
+      const clusterId = event?.nativeEvent?.features?.[0]?.properties?.cluster_id;
       try {
-        // Fetch expansion zoom and direct children in parallel.
-        const [expansionZoom, children] = await Promise.all([
-          sourceRef.current?.getClusterExpansionZoom(clusterId),
-          sourceRef.current?.getClusterChildren(clusterId),
-        ]);
-
-        // Use expansion zoom directly — no fixed increment.
-        const targetZoom = expansionZoom ?? Math.min(zoomRef.current + 3, MAX_ZOOM);
-        cameraRef.current?.flyTo({ center: coords, duration: 400 });
-        cameraRef.current?.zoomTo(targetZoom, { duration: 400 });
+        const expansionZoom = await sourceRef.current?.getClusterExpansionZoom(clusterId);
+        const currentZoom = zoomRef.current;
+        const targetZoom = Math.min(
+          Math.max((expansionZoom ?? currentZoom + 3) + 1, currentZoom + 2),
+          MAX_ZOOM,
+        );
+        console.log(
+          `[map] cluster tap cluster_id=${clusterId} expansionZoom=${expansionZoom} currentZoom=${currentZoom} targetZoom=${targetZoom}`,
+        );
+        setCameraState({ centerCoordinate: coords, zoomLevel: targetZoom, animationDuration: 400 });
         zoomRef.current = targetZoom;
-
-        // If exactly 1 individual point remains after expansion (others formed a
-        // sub-cluster), auto-show its popup once the camera animation settles.
-        const singles = (children ?? []).filter((c: any) => !c?.properties?.cluster);
-        if (singles.length === 1) {
-          const leaf = singles[0];
-          const leafCoords: [number, number] = leaf?.geometry?.coordinates ?? coords;
-          setTimeout(() => {
-            onMarkerPress({
-              id: leaf?.properties?.id,
-              latitude: leafCoords[1],
-              longitude: leafCoords[0],
-              severity: leaf?.properties?.severity,
-              region: leaf?.properties?.region,
-              timestamp: leaf?.properties?.timestamp ?? undefined,
-              summary: leaf?.properties?.summary ?? undefined,
-              confidence: leaf?.properties?.confidence ?? undefined,
-            });
-          }, 450);
-        }
-      } catch {
-        // getClusterExpansionZoom unavailable — aggressive fixed fallback.
+      } catch (err) {
+        console.log(`[map] getClusterExpansionZoom failed cluster_id=${clusterId}:`, err);
         const targetZoom = Math.min(zoomRef.current + 3, MAX_ZOOM);
-        cameraRef.current?.flyTo({ center: coords, duration: 400 });
-        cameraRef.current?.zoomTo(targetZoom, { duration: 400 });
+        setCameraState({ centerCoordinate: coords, zoomLevel: targetZoom, animationDuration: 400 });
         zoomRef.current = targetZoom;
       }
+      // Cluster tap: expand only — never show popup or navigate to Alert Detail.
     } else {
       // Individual marker tap — fires handleMarkerPress in map.tsx which shows
       // the region popup; "View Details" on the popup navigates to Alert Detail.
@@ -187,29 +198,30 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
 
   const handleZoomIn = () => {
     const next = Math.min(zoomRef.current + 1, MAX_ZOOM);
-    cameraRef.current?.zoomTo(next, { duration: 300 });
+    setCameraState(prev => ({ ...prev, zoomLevel: next, animationDuration: 300 }));
     zoomRef.current = next;
   };
 
   const handleZoomOut = () => {
     const next = Math.max(zoomRef.current - 1, MIN_ZOOM);
-    cameraRef.current?.zoomTo(next, { duration: 300 });
+    setCameraState(prev => ({ ...prev, zoomLevel: next, animationDuration: 300 }));
     zoomRef.current = next;
   };
 
   const handleHome = () => {
-    cameraRef.current?.fitBounds(ALL_ZONES_BOUNDS, {
-      padding: ALL_ZONES_PADDING,
-      duration: 500,
-    });
-    zoomRef.current = 3;
+    setCameraState({ centerCoordinate: HOME_CENTER, zoomLevel: HOME_ZOOM, animationDuration: 500 });
+    zoomRef.current = HOME_ZOOM;
   };
 
   return (
     <View style={styles.container}>
       <Map
+        ref={mapRef}
         style={styles.map}
         mapStyle={TILE_STYLE}
+        onDidFinishLoadingMap={() => {
+          console.log('[map] cameraRef after map load:', cameraRef.current);
+        }}
         onRegionDidChange={(feature: any) => {
           const z = feature?.properties?.zoomLevel;
           if (typeof z === 'number') zoomRef.current = z;
@@ -217,10 +229,10 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
       >
         <Camera
           ref={cameraRef}
-          defaultSettings={{
-            bounds: ALL_ZONES_BOUNDS,
-            padding: ALL_ZONES_PADDING,
-          }}
+          centerCoordinate={cameraState.centerCoordinate}
+          zoomLevel={cameraState.zoomLevel}
+          animationDuration={cameraState.animationDuration}
+          animationMode="flyTo"
         />
 
         <GeoJSONSource
@@ -229,7 +241,7 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
           data={geoJSON}
           cluster={true}
           clusterRadius={30}
-          clusterMaxZoom={6}
+          clusterMaxZoom={8}
           clusterProperties={CLUSTER_PROPERTIES}
           onPress={handleSourcePress}
         >
@@ -275,7 +287,7 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
         </GeoJSONSource>
       </Map>
 
-      {/* Zoom + home controls — top-right vertical stack */}
+      {/* Zoom + home + fit-all controls — top-right vertical stack */}
       <View style={styles.controlStack}>
         <TouchableOpacity style={styles.controlBtn} onPress={handleZoomIn} activeOpacity={0.7}>
           <Text style={styles.controlBtnText}>+</Text>
@@ -285,6 +297,9 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
         </TouchableOpacity>
         <TouchableOpacity style={[styles.controlBtn, styles.controlBtnHome]} onPress={handleHome} activeOpacity={0.7}>
           <Text style={styles.controlBtnText}>⌂</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.controlBtn, styles.controlBtnFitAll]} onPress={handleHome} activeOpacity={0.7}>
+          <Text style={styles.controlBtnFitAllText}>All</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -311,6 +326,15 @@ const styles = StyleSheet.create({
   },
   controlBtnHome: {
     marginTop: 4,
+  },
+  controlBtnFitAll: {
+    marginTop: 4,
+  },
+  controlBtnFitAllText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 16,
   },
   controlBtnText: {
     color: '#fff',

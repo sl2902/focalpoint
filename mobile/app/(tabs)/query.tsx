@@ -312,7 +312,22 @@ export default function QueryScreen() {
                 Your query was modified to remove unsafe content.
               </Text>
             )}
-            <Text style={styles.answer}>{result.answer}</Text>
+            {(() => {
+              const noteMatch = result.answer.match(/\[Note:[^\]]+\]/i);
+              const cleanAnswer = noteMatch
+                ? result.answer.replace(noteMatch[0], '').trim()
+                : result.answer;
+              return (
+                <>
+                  <Text style={styles.answer}>{cleanAnswer}</Text>
+                  {noteMatch && (
+                    <Text style={styles.answerNote}>
+                      {noteMatch[0].replace(/^\[|\]$/g, '')}
+                    </Text>
+                  )}
+                </>
+              );
+            })()}
             <CitationList citations={result.source_citations} />
           </View>
         )}
@@ -460,6 +475,7 @@ const styles = StyleSheet.create({
   shortRecordingHint: { marginTop: 6, fontSize: 13, color: '#6b7280', textAlign: 'center' },
   sanitisedNote: { fontSize: 12, color: '#d97706', fontStyle: 'italic' },
   answer: { fontSize: 15, color: '#111827', lineHeight: 22 },
+  answerNote: { fontSize: 13, color: '#9ca3af', fontStyle: 'italic', marginTop: 6, lineHeight: 18 },
 
   modalBackdrop: {
     flex: 1,
