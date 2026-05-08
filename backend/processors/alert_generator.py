@@ -26,7 +26,10 @@ from __future__ import annotations
 
 from typing import Final
 
+from loguru import logger
+
 from backend.alerts.severity_scorer import SeverityResult
+from backend.config import settings
 from backend.ingestion.cpj_connector import CountryStats
 from backend.ingestion.gdelt_connector import GdeltArticle
 from backend.ingestion.gdeltcloud_connector import GdeltCloudEvent
@@ -142,6 +145,20 @@ class AlertGenerator:
         use_web_search = len(gdelt_articles) == 0
         audio_provided = audio_bytes is not None
 
+        # Ollama uses its own web search API (ollama.com/api/web_search) rather
+        # than Google Search grounding. The Google Search tool instruction in the
+        # prompt causes Ollama to emit stripped tool-call tokens and return an
+        # empty response field. When Ollama is enabled: build the prompt without
+        # the tool instruction, and let _ollama_generate_alert fetch and inject
+        # search results directly. use_web_search is still passed to generate_alert
+        # so the client knows to call the Ollama web search API.
+        prompt_use_web_search = use_web_search and not settings.OLLAMA_ENABLED
+        if use_web_search and settings.OLLAMA_ENABLED:
+            logger.debug(
+                f"alert_generator: Ollama web search path for region={region!r}"
+                f" — results will be fetched and injected by gemma_client"
+            )
+
         if journalist_query:
             sanitised = sanitise_query(journalist_query).text
         else:
@@ -155,7 +172,7 @@ class AlertGenerator:
             rsf_score=rsf_score,
             region=region,
             sanitised_query=sanitised,
-            use_web_search=use_web_search,
+            use_web_search=prompt_use_web_search,
             audio_provided=audio_provided,
         )
 

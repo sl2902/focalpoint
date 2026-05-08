@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     ACLED_PASSWORD: str = ""
     ACLED_TOKEN_URL: str = "https://acleddata.com/oauth/token"
 
+    # Ollama local inference — set OLLAMA_ENABLED=True in .env for local dev
+    OLLAMA_ENABLED: bool = False
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    # API key for https://ollama.com/api/web_search — create at ollama.com/settings/keys
+    OLLAMA_API_KEY: str = ""
+
     # Background alert scheduler
     WATCH_ZONES: list[str] = [
         "Palestine", "Gaza", "Israel", "Iran", "Ukraine", "Sudan", "Myanmar", "Yemen", "Syria"

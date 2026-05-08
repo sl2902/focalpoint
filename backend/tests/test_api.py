@@ -463,6 +463,7 @@ class TestPostQuery:
         app.dependency_overrides[get_cpj_connector] = _mock_cpj
         app.dependency_overrides[get_alert_generator] = _mock_generator
         app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
+        app.dependency_overrides[get_redis] = lambda: None  # disable cache so fetch_articles is always called
         with TestClient(app) as c:
             c.post("/query", data=self._VALID_BODY)
         app.dependency_overrides.clear()

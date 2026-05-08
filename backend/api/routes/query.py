@@ -40,6 +40,7 @@ from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
 from backend.ingestion.gdeltcloud_connector import GdeltCloudConnector
+from backend.alerts.severity_scorer import score_severity
 from backend.processors.alert_generator import AlertGenerator
 from backend.processors.local_transcriber import TranscriptionUnavailableError, get_local_transcriber
 from backend.security.rate_limiter import QUERY_RATE_LIMIT, limiter
@@ -110,6 +111,22 @@ async def query(
             f" size={len(audio_bytes)}B — transcription handled by /transcribe"
         )
 
+    # Cache check before any data-source calls — journalist_query and region are
+    # already known. Cached entries are only written for GDELT-backed responses, so
+    # a hit is always valid regardless of what GDELT would return today.
+    if redis is not None:
+        key = _cache_key(region, journalist_query)
+        try:
+            cached = await redis.get(key)
+            if cached:
+                logger.debug(f"query: cache hit for key={key!r} — skipping GDELT fetches")
+                data = json.loads(cached)
+                data["was_sanitised"] = sanitised.was_modified if sanitised else False
+                return QueryResponse(**data)
+        except Exception as exc:
+            logger.warning(f"query: Redis read failed — {exc}")
+
+    # Cache miss — fetch live data.
     # GDELT Doc API search is always region-scoped, not journalist-question-scoped.
     gdelt_search_term = f"conflict {region}"
     events = await gdelt_cloud.fetch_events(region)
@@ -124,18 +141,17 @@ async def query(
         f" use_web_search={use_web_search}"
     )
 
-    # Cache check — GDELT-backed responses only; audio no longer affects generation.
-    if not use_web_search and redis is not None:
-        key = _cache_key(region, journalist_query)
-        try:
-            cached = await redis.get(key)
-            if cached:
-                logger.debug(f"query: cache hit for key={key!r}")
-                data = json.loads(cached)
-                data["was_sanitised"] = sanitised.was_modified if sanitised else False
-                return QueryResponse(**data)
-        except Exception as exc:
-            logger.warning(f"query: Redis read failed — {exc}")
+    severity_result = score_severity(
+        conflict_events=events,
+        gdelt_articles=gdelt_resp.articles,
+        cpj_stats=cpj_stats,
+        rsf_press_freedom=rsf_score,
+        gdelt_aggregate_tone=gdelt_resp.aggregate_tone,
+    )
+    logger.debug(
+        f"query: scorer result for {region!r} — {severity_result.level.value}"
+        f" (score={severity_result.score:.1f}, floor={severity_result.floor_applied})"
+    )
 
     alert = generator.generate(
         conflict_events=events,
@@ -145,6 +161,7 @@ async def query(
         rsf_score=rsf_score,
         region=region,
         journalist_query=journalist_query,
+        severity_result=severity_result,
     )
 
     response = QueryResponse(
@@ -156,10 +173,17 @@ async def query(
         was_sanitised=sanitised.was_modified if sanitised else False,
     )
 
-    # Cache write — GDELT-backed, non-fallback responses only.
-    # Never cache INSUFFICIENT_DATA: it may be an API timeout or transient failure
-    # and should not poison the cache for the next hour.
-    if not use_web_search and redis is not None and alert.severity != "INSUFFICIENT_DATA":
+    # Cache write — GDELT-backed, real responses only.
+    # Exclusions:
+    #   - INSUFFICIENT_DATA severity: may be a transient API timeout/failure.
+    #   - FALLBACK citations (id starts with "FALLBACK:"): _apply_max_severity can
+    #     promote a Gemma API-failure alert from INSUFFICIENT_DATA to a real severity
+    #     using the deterministic scorer, which would otherwise pass the severity check
+    #     while leaving "Gemma 4 API call failed" as the summary. Never cache those.
+    is_fallback = any(
+        c.id.startswith("FALLBACK:") for c in alert.source_citations
+    )
+    if not use_web_search and redis is not None and alert.severity != "INSUFFICIENT_DATA" and not is_fallback:
         key = _cache_key(region, journalist_query)
         try:
             payload = response.model_dump(mode="json")

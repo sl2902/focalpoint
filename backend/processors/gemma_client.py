@@ -250,6 +250,11 @@ class GemmaClient:
 
     Instantiate once per backend process (API key is read from settings
     at construction time). Pass the instance to alert_generator.
+
+    When settings.OLLAMA_ENABLED is True, alert generation is routed to
+    the local Ollama server (OLLAMA_BASE_URL/api/generate, model gemma4:26b)
+    instead of Google AI Studio. The /transcribe path always uses the local
+    Gemma 4 E4B model and is unaffected by this setting.
     """
 
     def __init__(self, api_key: str | None = None) -> None:
@@ -261,6 +266,13 @@ class GemmaClient:
             # separately through HttpOptions.
             http_options={"timeout": 180_000},
         )
+        if settings.OLLAMA_ENABLED:
+            logger.info(
+                f"gemma_client: inference backend = Ollama"
+                f" ({settings.OLLAMA_BASE_URL}, model=gemma4:26b)"
+            )
+        else:
+            logger.info("gemma_client: inference backend = Google AI Studio (gemma-4-26b-a4b-it)")
 
     def generate_alert(
         self,
@@ -290,6 +302,17 @@ class GemmaClient:
         Returns:
             Validated AlertOutput. Never raises.
         """
+        if settings.OLLAMA_ENABLED:
+            logger.info(
+                f"gemma_client: Ollama inference for region={region!r}"
+                f" use_web_search={use_web_search}"
+            )
+            return self._ollama_generate_alert(prompt, region, use_web_search=use_web_search)
+
+        logger.debug(
+            f"gemma_client: Google AI Studio inference for region={region!r}"
+            f" use_web_search={use_web_search}"
+        )
         acquired = _GEMMA_SEM.acquire(blocking=False)
         if not acquired:
             logger.warning(
@@ -311,6 +334,182 @@ class GemmaClient:
             )
         finally:
             _GEMMA_SEM.release()
+
+    def _ollama_generate(self, prompt: str, num_predict: int = 1024) -> dict:
+        """
+        POST prompt to the local Ollama server and return the full response dict.
+
+        Uses stream=False so the entire response arrives in one JSON payload.
+        No timeout is set — local inference can be slow on CPU and the caller
+        (local dev) controls the process. The returned dict contains both the
+        generated text (key "response") and Ollama timing fields
+        (total_duration, prompt_eval_count, eval_count, etc.).
+        """
+        url = f"{settings.OLLAMA_BASE_URL}/api/generate"
+        payload = {
+            "model": "gemma4:26b",
+            "prompt": prompt,
+            "stream": False,
+            # num_ctx must cover the full prompt + output. Ollama's default is 2048
+            # which is less than the typical prompt token count (~2200). When the
+            # prompt exceeds num_ctx, Ollama silently truncates it — the model sees
+            # a corrupted context and response comes back empty.
+            # think=False: prevent Gemma 4 from spending the token budget on
+            # <think> blocks that Ollama strips from the response field.
+            "options": {
+                "num_ctx": 16384,
+                "num_predict": num_predict,
+                "temperature": 0,
+                "think": False,
+            },
+        }
+        response = httpx.post(url, json=payload, timeout=None)
+        response.raise_for_status()
+        return response.json()
+
+    def _ollama_web_search(self, query: str) -> list[dict]:
+        """
+        Call the Ollama cloud web search API and return result dicts.
+
+        Each result has keys: title, url, content.
+        Returns an empty list on any error (auth failure, rate limit, network
+        error) — callers must handle the empty-list case gracefully.
+        """
+        if not settings.OLLAMA_API_KEY:
+            logger.warning("ollama: OLLAMA_API_KEY not set — web search unavailable")
+            return []
+        try:
+            resp = httpx.post(
+                "https://ollama.com/api/web_search",
+                json={"query": query, "max_results": 5},
+                headers={"Authorization": f"Bearer {settings.OLLAMA_API_KEY}"},
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            logger.debug(
+                f"ollama: web search returned {len(results)} results"
+                f" for query={query!r}"
+            )
+            return results
+        except Exception as exc:
+            logger.warning(
+                f"ollama: web search failed for query={query!r}"
+                f" — {type(exc).__name__}: {exc}"
+            )
+            return []
+
+    def _ollama_generate_alert(
+        self, prompt: str, region: str, use_web_search: bool = False
+    ) -> AlertOutput:
+        """
+        Generate an alert using the local Ollama server.
+
+        When use_web_search=True: calls the Ollama web search API, injects
+        results as a [WEB SEARCH RESULTS] context block before [USER QUERY].
+        If web search returns no results, falls back to the data-gap variant
+        (the prompt was already built without the Google Search tool instruction,
+        so it contains the [DATA AVAILABILITY NOTE] block — the model reasons
+        from CPJ/RSF historical data only).
+
+        No semaphore (local process), no safety-filter retries, no grounding
+        metadata. Falls back to INSUFFICIENT_DATA on any API or parse error.
+        """
+        augmented_prompt = prompt
+        web_results_injected = False
+        if use_web_search:
+            search_query = f"journalist safety {region} conflict news"
+            web_results = self._ollama_web_search(search_query)
+            if web_results:
+                lines = [
+                    "[WEB SEARCH RESULTS — USE THESE AS PRIMARY LIVE SOURCES]\n"
+                    "Cite each source using its url as the citation id.\n"
+                ]
+                for r in web_results:
+                    lines.append(
+                        f"- title: {r.get('title', '')}\n"
+                        f"  url: {r.get('url', '')}\n"
+                        f"  content: {r.get('content', '')[:400]}\n"
+                    )
+                lines.append("[END WEB SEARCH RESULTS]\n")
+                results_block = "\n" + "".join(lines)
+                # Insert before [USER QUERY so the model sees retrieved data,
+                # then live web results, then the journalist's question.
+                augmented_prompt = prompt.replace(
+                    "[USER QUERY", results_block + "[USER QUERY", 1
+                )
+                web_results_injected = True
+                logger.debug(
+                    f"ollama: injected {len(web_results)} web search results"
+                    f" into prompt for region={region!r}"
+                )
+            else:
+                logger.warning(
+                    "ollama: web search unavailable"
+                    f" — using historical data fallback for region={region!r}"
+                )
+                # augmented_prompt stays as the original data-gap prompt
+
+        num_predict = 4096
+
+        logger.debug(
+            f"ollama: sending prompt for region={region!r}"
+            f" prompt_length={len(augmented_prompt)} chars"
+            f" num_predict={num_predict}"
+        )
+        t0 = time.perf_counter()
+        try:
+            resp_data = self._ollama_generate(augmented_prompt, num_predict=num_predict)
+        except Exception as exc:
+            logger.warning(
+                f"ollama: API call failed for region={region!r}"
+                f" — {type(exc).__name__}: {exc}"
+            )
+            return _fallback(region)
+        wall_s = time.perf_counter() - t0
+
+        raw_text = resp_data.get("response", "")
+
+        # Ollama returns nanosecond duration fields — log them alongside wall time
+        # so we can separate model inference from network round-trip overhead.
+        total_ns = resp_data.get("total_duration") or 0
+        prompt_eval_count = resp_data.get("prompt_eval_count") or 0
+        eval_count = resp_data.get("eval_count") or 0
+        done_reason = resp_data.get("done_reason", "unknown")
+        total_s = total_ns / 1e9
+        logger.debug(
+            f"ollama: region={region!r}"
+            f" wall={wall_s:.2f}s total_duration={total_s:.2f}s"
+            f" network_overhead={wall_s - total_s:.2f}s"
+            f" prompt_eval_count={prompt_eval_count} eval_count={eval_count}"
+            f" done_reason={done_reason!r}"
+        )
+
+        if done_reason == "length":
+            logger.warning(
+                f"ollama: output truncated at num_predict={num_predict}"
+                f" eval_count={eval_count} for region={region!r}"
+                f" — increase num_predict if JSON is invalid"
+            )
+
+        if not raw_text:
+            done_reason = resp_data.get("done_reason", "unknown")
+            resp_keys = list(resp_data.keys())
+            logger.warning(
+                f"ollama: empty response for region={region!r}"
+                f" done_reason={done_reason!r} resp_keys={resp_keys}"
+            )
+            return _fallback(region)
+
+        logger.debug(f"ollama: raw response for region={region!r} — {raw_text!r}")
+
+        try:
+            raw_dict = _extract_json(raw_text)
+        except json.JSONDecodeError as exc:
+            logger.warning(f"ollama: JSON parse failed for region={region!r} — {exc}")
+            return _fallback(region)
+
+        return validate_output(raw_dict, region)
 
     def _generate_alert_inner(
         self,
