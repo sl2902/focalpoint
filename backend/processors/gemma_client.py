@@ -234,6 +234,30 @@ def _apply_grounding_urls_to_citations(
     return updated
 
 
+def _last_json_object(text: str) -> str | None:
+    """
+    Return the last complete top-level JSON object in *text*.
+
+    Walks backwards from the final '}' tracking brace depth — O(n) and immune
+    to greedy-regex false-positives when the model's CoT prose itself contains
+    brace characters before the final JSON output block.
+    Returns None if no balanced {…} pair is found.
+    """
+    last = text.rfind("}")
+    if last == -1:
+        return None
+    depth = 0
+    for i in range(last, -1, -1):
+        c = text[i]
+        if c == "}":
+            depth += 1
+        elif c == "{":
+            depth -= 1
+            if depth == 0:
+                return text[i : last + 1]
+    return None
+
+
 def _extract_json(raw_text: str) -> dict:
     """
     Strip optional markdown fences and parse the remaining text as JSON.
@@ -591,7 +615,9 @@ class GemmaClient:
 
         # Fallback: some Ollama builds put the entire CoT+JSON in message['thinking']
         # and leave message['content'] empty even when think=False is set.
-        # Search for the last {...} block inside the thinking field and use it.
+        # Walk backwards from the last } to find the last complete JSON object —
+        # a greedy regex across the whole field would span intermediate brace usage
+        # in the CoT prose and produce an unparseable blob.
         if not raw_text:
             thinking = resp_data.get("message", {}).get("thinking", "")
             if thinking:
@@ -599,9 +625,9 @@ class GemmaClient:
                     f"ollama: content empty, searching thinking field"
                     f" ({len(thinking)} chars) for JSON for region={region!r}"
                 )
-                m = re.search(r'\{.*\}', thinking, re.DOTALL)
-                if m:
-                    raw_text = m.group(0)
+                candidate = _last_json_object(thinking)
+                if candidate:
+                    raw_text = candidate
                     logger.info(
                         f"ollama: extracted JSON from thinking field for region={region!r}"
                     )

@@ -57,13 +57,45 @@ Files:
 - alert_generator.py     # orchestrates prompt→Gemma→max-severity reconciliation
 - local_transcriber.py   # on-device ASR via Gemma 4 E4B; singleton loaded at startup
 
+### Ollama path (local 26B inference)
+
+When `settings.OLLAMA_ENABLED=True`, `generate_alert` is routed to
+`_ollama_generate_alert` instead of the Google AI Studio path. Key differences:
+
+- **Endpoint**: `/api/chat` (not `/api/generate`) — applies the model's chat template
+  so the model generates output rather than silently consuming tokens. Response is at
+  `message['content']`, not `response`.
+- **Thinking tokens**: Gemma 4 may route its CoT reasoning into `message['thinking']`
+  and leave `message['content']` empty even when `think: False` and `thinking_budget: 0`
+  are set. Fallback: `_last_json_object(thinking)` walks backwards from the last `}`
+  to find the last complete top-level JSON block (immune to greedy-regex false-positives
+  when CoT prose contains intermediate brace characters).
+- **Prompt splitting**: the assembled prompt is split at the first `[USER QUERY` marker
+  into a `system` message and a `user` message so the chat template applies correctly.
+  `"DO NOT use extended thinking. Respond with JSON immediately."` is prepended to the
+  system message. `/no_think` is prepended to the full prompt before splitting.
+- **Prompt size**: Ollama path uses tighter limits — `OLLAMA_MAX_EVENTS=10`,
+  `OLLAMA_MAX_GDELT=3`, `OLLAMA_TITLE_MAX=100`, `OLLAMA_SUMMARY_MAX=150` (vs 20/10
+  for the Google AI Studio path) — to keep prompts under ~1500 tokens and leave the
+  model ≥6000 generation tokens within `num_predict=8192`.
+- **Truncation recovery**: if the model hits `num_predict` and the JSON is truncated,
+  `_recover_truncated_json` extracts severity (required), summary (partial OK), and
+  any complete citation objects before the cutoff.
+- **Web search**: calls `ollama.com/api/web_search` (requires `OLLAMA_API_KEY`),
+  injects results as a `[WEB SEARCH RESULTS]` block before `[USER QUERY]`. Max 3
+  results; content truncated to 200 chars each.
+- **No semaphore**: local Ollama is single-process; concurrency is managed by Ollama
+  itself rather than the `threading.BoundedSemaphore(2)` used on the Google path.
+- **Tests**: `backend/tests/conftest.py` autouse fixture forces `OLLAMA_ENABLED=False`
+  so the Ollama path does not interfere with the Google AI Studio test suite.
+
 ### Web search fallback
 
 When GDELT Doc API returns no usable articles (`gdelt_articles` is empty or
 `aggregate_tone == 0.0`), `AlertGenerator` sets `use_web_search=True` and
 passes it to both `prompt_builder` and `gemma_client`:
 
-- `prompt_builder` inserts a `[WEB SEARCH AVAILABLE]` block instructing Gemma
+- `prompt_builder` inserts a `[MANDATORY WEB SEARCH]` block instructing Gemma
   to search for recent news about the journalist's query location, prioritising
   Reuters, AP News, BBC, Al Jazeera, The Guardian, and France24.
 - `gemma_client` switches from `_GENERATION_CONFIG` (JSON mime type enforced)
@@ -113,10 +145,11 @@ Web search mode (GDELT Doc API unavailable):
 [SYSTEM INSTRUCTIONS — NOT USER INPUT]
 ...same header...
 
-[WEB SEARCH AVAILABLE]
-GDELT Doc API returned no usable articles. Use your web search tool...
-Prioritise: Reuters, AP News, BBC, Al Jazeera, The Guardian, France24.
-[END WEB SEARCH AVAILABLE]
+[MANDATORY WEB SEARCH — YOU MUST FOLLOW THESE INSTRUCTIONS]
+GDELT Doc API returned 0 usable articles. You MUST use your Google Search
+tool NOW to find current news about journalist safety in the region...
+Preferred sources: Reuters, AP News, BBC, Al Jazeera, The Guardian, France24.
+[END MANDATORY WEB SEARCH]
 
 [DATA AVAILABILITY NOTE]          ← if also no GDELT Cloud events
 ...
@@ -238,14 +271,18 @@ Shows one marker per watch zone (all 9 regions), coloured by severity.
   "View Full Assessment →" button that posts a message to the parent frame,
   triggering navigation to AlertDetail.
 - **Native** (`MapView.native.tsx`): MapLibre React Native + OpenStreetMap demo
-  tiles. Uses `GeoJSONSource` with `cluster=true` (`clusterRadius=30`,
-  `clusterMaxZoom=6`). Cluster colour reflects the highest severity among
-  its members via `clusterProperties` max-aggregation. Tapping a cluster zooms
-  to its expansion level via `getClusterExpansionZoom`; if only one point
-  remains it auto-opens that marker's popup. Individual marker tap fires
-  `onMarkerPress` from `event.nativeEvent.features`. Home button uses
-  `fitBounds` over all 9 watch zone centres. Zoom +/− and home controls
-  overlaid top-right.
+  tiles. Uses a single `GeoJSONSource` (no clustering) with two `Layer`s:
+  a `circle` layer for coloured dots and a `symbol` layer for region name labels
+  (`text-field: '{region}'`, anchored above the dot). Marker tap is handled via
+  `GeoJSONSource.onPress` — `event.features[0].properties` carries the region and
+  severity. Geographically overlapping watch zones (Gaza/Palestine/Israel) are
+  offset via `DISPLAY_OFFSETS` applied at GeoJSON feature-creation time.
+  Camera is driven by a `cameraState` object (`centerCoordinate`, `zoomLevel`);
+  the `Camera` component's `key` prop is set from these values so MapLibre applies
+  the new position when state changes (controlled-prop remount pattern — `zoomTo`
+  and `jumpTo` are not available on the Camera ref in MapLibre RN 11.x).
+  Home button calls `cameraRef.current.fitBounds(bounds, padding, padding, duration)`
+  to frame all 9 watch zones. Zoom +/− and home controls overlaid top-right.
 - Severity legend overlaid bottom-right (Safe / Elevated / Active / Critical / No data).
 
 **AlertDetail** (`app/alert/[id].tsx`)
@@ -288,8 +325,28 @@ Voice recording flow:
 
 SQLite (`services/cache.ts`):
 - Promise-based singleton `_dbPromise` prevents init races on cold start
-- `getLatestAlertsByDays(days)` — split two-query approach (subquery binding
-  bug in expo-sqlite means `?` inside a subquery WHERE gets NULL)
+- Schema: `(id, region, days, data TEXT, fetched_at INTEGER)` — `days` partitions
+  the time window; `data` is the full `AlertResponse` JSON blob
+- `getLatestAlertsByDays(days)` — two-pass approach: first collect newest valid alert
+  per region, then collect newest fallback only for regions with no valid alert.
+  Avoids a subquery (expo-sqlite binding bug: `?` inside a subquery WHERE gets NULL)
+- `upsertAlert(alert, days)` — INSERT then trim to 100 rows per (region, days)
+- `getNewestFetchedAt(days)` — MAX(fetched_at) for staleness check
+- `deleteAlertsOlderThan(ageMs)` — bulk eviction called on cold start
+
+**Feed staleness and eviction (`hooks/useAlerts.ts`):**
+- Cold-start effect: evicts rows older than 24 h, then checks MAX(fetched_at) age.
+  If age > 8 h (stale), fetches all regions from backend and overwrites SQLite.
+  Otherwise serves SQLite directly.
+- `isLoading` starts `true` when the module-level `_alertsCache` is empty (fresh
+  install or first tab mount). Cleared after the first `useFocusEffect` SQLite read
+  so the feed never flashes `EmptyRegionCard` on mount.
+- `_alertsCache` is module-level (survives component remounts within the same JS
+  runtime) — `useState` initialises from it so the feed renders existing data
+  immediately on remount without waiting for the SQLite read.
+- `revalidate()` re-reads SQLite and calls `setAlerts` — called by `handleLoad` after
+  a successful per-region fetch so the card transitions to `AlertCard` immediately
+  without requiring navigation.
 
 ## Model Routing Logic
 

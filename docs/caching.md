@@ -79,48 +79,38 @@ Secondary purpose: instant load on app open before fresh data arrives.
 
 ```sql
 CREATE TABLE alerts (
-  id TEXT PRIMARY KEY,
-  region TEXT NOT NULL,
-  severity TEXT NOT NULL,  -- GREEN, AMBER, RED, CRITICAL
-  summary TEXT NOT NULL,
-  source_ids TEXT NOT NULL, -- JSON array of ACLED/GDELT/CPJ citations
-  timestamp INTEGER NOT NULL,
-  watch_zone INTEGER DEFAULT 0  -- 1 if from journalist's watch zone
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  region     TEXT    NOT NULL,
+  days       INTEGER NOT NULL DEFAULT 7,  -- time window (1/3/7/14/30)
+  data       TEXT    NOT NULL,            -- full AlertResponse JSON blob
+  fetched_at INTEGER NOT NULL             -- Unix ms timestamp of fetch
 );
-
-CREATE TABLE map_markers (
-  id TEXT PRIMARY KEY,
-  latitude REAL NOT NULL,
-  longitude REAL NOT NULL,
-  severity TEXT NOT NULL,
-  alert_id TEXT REFERENCES alerts(id),
-  timestamp INTEGER NOT NULL
-);
-
-CREATE TABLE cache_meta (
-  key TEXT PRIMARY KEY,
-  last_updated INTEGER NOT NULL
-);
+CREATE INDEX idx_alerts_region      ON alerts(region);
+CREATE INDEX idx_alerts_region_days ON alerts(region, days);
 ```
 
-**Retention policy:**
-- Keep last 100 alerts per watch zone region
-- Keep last 50 alerts for non-watch-zone regions
-- Purge alerts older than 7 days automatically on app open
-- Map markers pruned to match alert retention
+`data` stores the complete `AlertResponse` JSON. `days` partitions rows by
+time window so the 1d feed and 7d feed are independent cache namespaces.
 
-**Staleness indicator:**
-The UI always shows "Last updated: {timestamp}" prominently.
-When offline, all data is labelled CACHED in amber text.
-The journalist always knows how fresh their data is.
+**Retention policy:**
+- Keep last 100 rows per `(region, days)` — trimmed after every `upsertAlert`
+- On cold start, evict all rows with `fetched_at < now() - 24h` via
+  `deleteAlertsOlderThan` so stale data cannot accumulate across app restarts
+
+**Staleness check:**
+On cold start `getNewestFetchedAt(days)` returns `MAX(fetched_at)` for the
+current time window. If the newest row is older than 8 hours, `useAlerts`
+fetches all watch zones from the backend and overwrites SQLite. Otherwise it
+serves SQLite directly. Pull-to-refresh always bypasses this check and hits
+the backend.
 
 **Sync behaviour:**
-On connectivity restored:
-1. Fetch fresh alerts from backend
-2. Merge with local cache — newer timestamps win
-3. Purge expired entries
-4. Update cache_meta timestamps
-5. Remove CACHED label from UI
+On cold start (connectivity available):
+1. Evict rows older than 24 h
+2. Check `MAX(fetched_at)` age against 8 h stale threshold
+3. If stale → `fetchFeed()` from backend, `upsertAlert` each result
+4. If fresh → read from SQLite directly (no network call)
+5. Pull-to-refresh always calls `fetchFeed()` regardless of age
 
 ---
 

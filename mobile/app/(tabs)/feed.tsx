@@ -74,6 +74,7 @@ export default function FeedScreen() {
     try {
       const fresh = await fetchAlertForRegion(region, days);
       await upsertAlert(fresh, days);
+      console.log(`[feed] fetch complete for ${region}, triggering revalidate`);
       await revalidate();
     } catch {
       // Card stays empty — user can retry.

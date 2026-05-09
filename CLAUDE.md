@@ -105,26 +105,29 @@ docs/
 - Do not bundle multiple unrelated changes in one commit
 - Run pytest after every backend change before moving on
 
-## Current Status (May 8, 2026)
+## Current Status (May 10, 2026)
 
-### Backend — Complete (430+ tests)
+### Backend — Complete (535+ tests)
 - GDELT Cloud + Doc, CPJ, RSF connectors
 - Severity scoring with historical floor and max severity rule
 - Gemma 4 26B via Google AI Studio API for alerts
 - Local Gemma 4 E4B via Transformers for audio transcription (MPS on Apple Silicon)
 - Background scheduler, SQLite cache, FastAPI routes
 - Web search fallback via Gemma 4 when GDELT Doc fails
+- Ollama path: /api/chat endpoint, thinking-token extraction, prompt size reduction,
+  partial JSON recovery (_recover_truncated_json), _last_json_object for thinking field fallback
 
 ### Mobile — In Progress
-- Feed screen — working, shows all 9 watch zones
+- Feed screen — working, shows all 9 watch zones; 8h staleness check + 24h eviction on cold start
 - Alert Detail — working, back button, refresh
-- Map screen — MapLibre native working, clustering, zoom controls pending
+- Map screen — individual markers per watch zone (no clustering), region name labels,
+  +/- zoom and home button working; DISPLAY_OFFSETS for Gaza/Palestine/Israel overlap
 - Settings screen — working, scroll fixed
 - Query screen — voice transcription working (E4B local), text query working
 - Voice UX — mic meter pending, audio chip UX fix pending
 
 ### Pending
-- Ollama local inference for 26B alerts
+- Ollama: production testing and validation (core path implemented)
 - Cloud Run deployment
 - Demo video recording
 - Kaggle writeup
@@ -143,3 +146,10 @@ docs/
 - Show a plan before implementing non-trivial changes — user preference confirmed
   across multiple sessions.
 - uv only, never pip — enforced; requirements.txt must never be created.
+- Ollama thinking tokens: Gemma 4 may put JSON in message['thinking'] and leave
+  message['content'] empty even with think=False. _last_json_object walks backwards
+  from the last } to find the last complete JSON block — immune to greedy-regex
+  false-positives when CoT prose contains intermediate brace characters.
+- backend/tests/conftest.py has an autouse fixture forcing OLLAMA_ENABLED=False
+  for all tests so Ollama integration tests don't interfere with the Google AI
+  Studio test suite.
