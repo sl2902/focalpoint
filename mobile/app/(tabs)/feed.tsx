@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   RefreshControl,
   View,
@@ -30,12 +31,25 @@ type FeedItem =
 export default function FeedScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { alerts, days, refresh, refreshing, revalidate } = useAlerts();
+  const { alerts, isLoading, days, refresh, refreshing, revalidate } = useAlerts();
   const { refreshingRegion } = useRefreshStore();
   const [loadingRegion, setLoadingRegion] = useState<string | null>(null);
 
   // Regions that have no cached alert for the current days window.
   const loadedSet = new Set(alerts.map((a) => a.region));
+
+  // ── Diagnostics ─────────────────────────────────────────────────────────────
+  console.log('[feed] alerts from useAlerts:', JSON.stringify(alerts.map((a) => ({
+    region: a.region,
+    severity: a.severity,
+    timestamp: a.timestamp,
+  }))));
+  console.log('[feed] loadedSet regions:', [...loadedSet]);
+  console.log('[feed] WATCH_ZONES expected:', WATCH_ZONES);
+  const missingZones = WATCH_ZONES.filter((z) => !loadedSet.has(z));
+  console.log('[feed] zones rendering as EmptyRegionCard (not in loadedSet):', missingZones);
+  // ── End diagnostics ──────────────────────────────────────────────────────────
+
   const feedItems: FeedItem[] = [
     ...alerts.map((a) => ({
       type: isFallback(a) ? ('fallback' as const) : ('alert' as const),
@@ -113,37 +127,43 @@ export default function FeedScreen() {
         <Text style={styles.timeLabel}>Showing {days}d data</Text>
       </View>
 
-      <FlatList
-        data={feedItems}
-        keyExtractor={(item) => {
-          if (item.type === 'empty') return `empty:${item.region}`;
-          return `${item.type}:${item.data.region}`;
-        }}
-        renderItem={renderItem}
-        scrollEnabled={true}
-        keyboardShouldPersistTaps="handled"
-        bounces={true}
-        style={styles.flatList}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={refresh}
-            tintColor="#2563eb"
-          />
-        }
-        contentContainerStyle={[styles.listContent, isEmpty && styles.listEmpty]}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>📡</Text>
-            <Text style={styles.emptyTitle}>
-              No {DAYS_LABELS[days]} data available yet
-            </Text>
-            <Text style={styles.emptyBody}>
-              Data is updated automatically in the background.
-            </Text>
-          </View>
-        }
-      />
+      {isLoading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#2563eb" />
+        </View>
+      ) : (
+        <FlatList
+          data={feedItems}
+          keyExtractor={(item) => {
+            if (item.type === 'empty') return `empty:${item.region}`;
+            return `${item.type}:${item.data.region}`;
+          }}
+          renderItem={renderItem}
+          scrollEnabled={true}
+          keyboardShouldPersistTaps="handled"
+          bounces={true}
+          style={styles.flatList}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={refresh}
+              tintColor="#2563eb"
+            />
+          }
+          contentContainerStyle={[styles.listContent, isEmpty && styles.listEmpty]}
+          ListEmptyComponent={
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyIcon}>📡</Text>
+              <Text style={styles.emptyTitle}>
+                No {DAYS_LABELS[days]} data available yet
+              </Text>
+              <Text style={styles.emptyBody}>
+                Data is updated automatically in the background.
+              </Text>
+            </View>
+          }
+        />
+      )}
     </View>
   );
 }
@@ -166,6 +186,7 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: 13, color: '#6b7280', marginTop: 2 },
   timeLabel: { fontSize: 12, color: '#6b7280', fontWeight: '500' },
 
+  loadingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   flatList: { flex: 1 },
   listContent: { paddingVertical: 8 },
   listEmpty: { flex: 1 },

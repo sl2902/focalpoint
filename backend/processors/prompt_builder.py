@@ -24,10 +24,21 @@ from backend.ingestion.gdeltcloud_connector import GdeltCloudEvent
 BACKEND_MAX_EVENTS = 20
 BACKEND_MAX_GDELT = 10
 
+# Tighter limits for Ollama path — keeps prompt under ~1500 tokens so the
+# model has 6000+ tokens of generation budget within num_predict=8192.
+OLLAMA_MAX_EVENTS = 10
+OLLAMA_MAX_GDELT = 3
+OLLAMA_TITLE_MAX = 100    # chars; article titles can be verbose
+OLLAMA_SUMMARY_MAX = 150  # chars; event summaries truncated harder
 
-def _serialise_events(events: list[GdeltCloudEvent]) -> list[dict]:
+
+def _serialise_events(
+    events: list[GdeltCloudEvent],
+    max_events: int = BACKEND_MAX_EVENTS,
+    summary_max: int = 300,
+) -> list[dict]:
     result = []
-    for e in events[:BACKEND_MAX_EVENTS]:
+    for e in events[:max_events]:
         actor1 = next((a.name for a in e.actors if a.role == "actor1"), None)
         actor2 = next((a.name for a in e.actors if a.role == "actor2"), None)
         result.append({
@@ -39,23 +50,28 @@ def _serialise_events(events: list[GdeltCloudEvent]) -> list[dict]:
             "location": e.geo.location if e.geo else None,
             "country": e.geo.country if e.geo else None,
             "fatalities": e.fatalities,
-            "summary": (e.summary or "")[:300],
+            "summary": (e.summary or "")[:summary_max],
         })
     return result
 
 
-def _serialise_gdelt(articles: list[GdeltArticle], aggregate_tone: float) -> dict:
+def _serialise_gdelt(
+    articles: list[GdeltArticle],
+    aggregate_tone: float,
+    max_articles: int = BACKEND_MAX_GDELT,
+    title_max: int | None = None,
+) -> dict:
     return {
         "aggregate_tone": round(aggregate_tone, 3),
         "articles": [
             {
                 "url": a.url,
-                "title": a.title,
+                "title": (a.title or "")[:title_max] if title_max else a.title,
                 "seendate": a.seendate,
                 "sourcecountry": a.sourcecountry,
                 "language": a.language,
             }
-            for a in articles[:BACKEND_MAX_GDELT]
+            for a in articles[:max_articles]
         ],
     }
 
@@ -80,6 +96,7 @@ def build_prompt(
     sanitised_query: str,
     use_web_search: bool = False,
     audio_provided: bool = False,
+    ollama_mode: bool = False,
 ) -> str:
     """
     Construct a grounded Gemma 4 prompt for conflict safety assessment.
@@ -103,11 +120,23 @@ def build_prompt(
     Returns:
         Fully assembled prompt string ready to send to the Gemma 4 API.
     """
+    if ollama_mode:
+        events_data = _serialise_events(
+            conflict_events, max_events=OLLAMA_MAX_EVENTS, summary_max=OLLAMA_SUMMARY_MAX
+        )
+        gdelt_data = _serialise_gdelt(
+            gdelt_articles, gdelt_aggregate_tone,
+            max_articles=OLLAMA_MAX_GDELT, title_max=OLLAMA_TITLE_MAX,
+        )
+    else:
+        events_data = _serialise_events(conflict_events)
+        gdelt_data = _serialise_gdelt(gdelt_articles, gdelt_aggregate_tone)
+
     retrieved_data = {
         "region": region,
         "assessment_timestamp": datetime.utcnow().isoformat() + "Z",
-        "conflict_events": _serialise_events(conflict_events),
-        "gdelt": _serialise_gdelt(gdelt_articles, gdelt_aggregate_tone),
+        "conflict_events": events_data,
+        "gdelt": gdelt_data,
         "cpj": _serialise_cpj(cpj_stats),
         "rsf_press_freedom_score": rsf_score,
     }

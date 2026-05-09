@@ -174,6 +174,7 @@ class AlertGenerator:
             sanitised_query=sanitised,
             use_web_search=prompt_use_web_search,
             audio_provided=audio_provided,
+            ollama_mode=settings.OLLAMA_ENABLED,
         )
 
         alert = self._gemma.generate_alert(

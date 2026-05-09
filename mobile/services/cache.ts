@@ -178,6 +178,27 @@ export async function refreshFallbackTimestamp(region: string, days: number): Pr
   );
 }
 
+/** MAX(fetched_at) across all cached rows for the given days window.
+ *  Returns null when the cache is empty. Used for staleness checks. */
+export async function getNewestFetchedAt(days: number): Promise<number | null> {
+  if (Platform.OS === 'web') return null; // web cache has no fetch timestamps
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ ts: number | null }>(
+    'SELECT MAX(fetched_at) AS ts FROM alerts WHERE days = ?',
+    days,
+  );
+  return row?.ts ?? null;
+}
+
+/** Delete all rows older than ageMs milliseconds. Called on cold start to
+ *  prevent permanently stale data accumulating in the SQLite file. */
+export async function deleteAlertsOlderThan(ageMs: number): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const db = await getDb();
+  const cutoff = Date.now() - ageMs;
+  await db.runAsync('DELETE FROM alerts WHERE fetched_at < ?', cutoff);
+}
+
 /** Most recent alert for a region across any days window — used by Alert Detail. */
 export async function getAlertByRegion(region: string): Promise<AlertResponse | null> {
   if (Platform.OS === 'web') {
