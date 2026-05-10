@@ -6,10 +6,11 @@
  *     from Alert Detail without a version-bump race).
  *   useEffect([days]) — reads SQLite when the days window changes, including
  *     while the screen is in the background.
- *   useEffect([isConnected]) — cold-start fetch that:
+ *   useEffect([isConnected]) — cold-start stale-while-revalidate:
  *     1. Evicts SQLite rows older than 24 hours.
- *     2. Checks cache age: if newest cached row is older than 8 hours, fetches
- *        from backend and overwrites SQLite; otherwise reads SQLite directly.
+ *     2. Immediately reads SQLite and displays whatever is cached (may be empty).
+ *     3. Simultaneously fetches from backend — always, no staleness gate.
+ *     4. When backend responds, writes fresh data to SQLite and updates display.
  *
  * Pull-to-refresh always hits the backend — never reads SQLite only.
  *
@@ -49,7 +50,6 @@ interface UseAlertsResult {
   revalidate: () => Promise<void>;
 }
 
-const STALE_THRESHOLD_MS = 8 * 60 * 60 * 1000;   // 8 hours
 const EVICT_THRESHOLD_MS = 24 * 60 * 60 * 1000;   // 24 hours
 
 // Survives component remounts within the same JS runtime session.
@@ -75,50 +75,56 @@ export function useAlerts(): UseAlertsResult {
     setAlerts(cached);
   }, []);
 
-  // Cold-start: evict 24h-old rows, check 8h staleness, fetch or serve from SQLite.
+  // Cold-start stale-while-revalidate: show SQLite immediately, always fetch backend in parallel.
   useEffect(() => {
     if (didInitialFetch.current || !isConnected) return;
     didInitialFetch.current = true;
 
-    (async () => {
-      // Always evict rows older than 24h on cold start so stale data can't
-      // accumulate across app restarts.
-      await deleteAlertsOlderThan(EVICT_THRESHOLD_MS);
+    let cancelled = false;
 
-      const newestFetchedAt = await getNewestFetchedAt(days);
-      const ageMs = newestFetchedAt != null ? Date.now() - newestFetchedAt : Infinity;
-      const isStale = ageMs > STALE_THRESHOLD_MS;
+    // Evict rows older than 24h so stale data can't accumulate across restarts.
+    deleteAlertsOlderThan(EVICT_THRESHOLD_MS).catch(() => {});
 
-      if (isStale) {
-        console.log(
-          `[alerts] cache stale (age=${(ageMs / 3_600_000).toFixed(1)}h,` +
-          ` fetched_at=${newestFetchedAt ? new Date(newestFetchedAt).toISOString() : 'none'})` +
-          ` — fetching from backend`,
-        );
-        const feed = await fetchFeed();
+    // Show whatever SQLite has right now so the feed is never blank while waiting.
+    getLatestAlertsByDays(days).then((cached) => {
+      if (cancelled) return;
+      applyAlerts(cached);
+      console.log(`[alerts] ${cached.length} showing SQLite while fetching backend`);
+    }).catch(() => {});
+
+    // Always fetch from backend on cold start — no staleness gate.
+    console.log('[alerts] cold start — always fetching from backend');
+    fetchFeed()
+      .then(async (feed) => {
+        // Always write to SQLite regardless of mount state — useFocusEffect must
+        // read fresh data on the next tab switch even if this component unmounted
+        // during the fetch (e.g. user switched tabs while the request was in-flight).
+        console.log(`[alerts] writing ${feed.length} backend alerts to local SQLite after cold start fetch`);
         await Promise.all(feed.map((a) => upsertAlert(a, days)));
-        const cached = await getLatestAlertsByDays(days);
-        applyAlerts(cached);
-        console.log(`[alerts] ${cached.length} alerts served from backend`);
-      } else {
-        const cached = await getLatestAlertsByDays(days);
-        applyAlerts(cached);
-        console.log(
-          `[alerts] ${cached.length} alerts served from SQLite` +
-          ` (fetched_at=${newestFetchedAt ? new Date(newestFetchedAt).toISOString() : 'none'},` +
-          ` age=${(ageMs / 3_600_000).toFixed(1)}h)`,
-        );
-      }
-    })().catch(() => {
-      // Network unavailable — existing SQLite data stays visible.
-    });
+        const fresh = await getLatestAlertsByDays(days);
+        // Only update React state if still mounted.
+        if (!cancelled) {
+          applyAlerts(fresh);
+          console.log(`[alerts] ${fresh.length} alerts served from backend (cold start)`);
+        }
+      })
+      .catch(() => {
+        // Network unavailable — SQLite display already set above.
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-read SQLite when the days window changes (covers background changes).
   useEffect(() => {
     let cancelled = false;
     getLatestAlertsByDays(days).then((cached) => {
-      if (!cancelled) applyAlerts(cached);
+      if (!cancelled) {
+        applyAlerts(cached);
+        console.log(`[alerts] ${cached.length} alerts served from SQLite (days=${days} change)`);
+      }
     });
     return () => {
       cancelled = true;
@@ -132,10 +138,12 @@ export function useAlerts(): UseAlertsResult {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      getLatestAlertsByDays(days).then((cached) => {
+      Promise.all([getLatestAlertsByDays(days), getNewestFetchedAt(days)]).then(([cached, newestTs]) => {
         if (!cancelled) {
           applyAlerts(cached);
           setIsLoading(false);
+          const ts = newestTs != null ? new Date(newestTs).toISOString() : 'none';
+          console.log(`[alerts] ${cached.length} alerts served from SQLite (focus, newest_fetched_at=${ts})`);
         }
       }).catch(() => {
         if (!cancelled) setIsLoading(false);

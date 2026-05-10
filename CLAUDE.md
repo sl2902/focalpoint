@@ -107,18 +107,19 @@ docs/
 
 ## Current Status (May 10, 2026)
 
-### Backend — Complete (535+ tests)
+### Backend — Complete (551 tests)
 - GDELT Cloud + Doc, CPJ, RSF connectors
 - Severity scoring with historical floor and max severity rule
 - Gemma 4 26B via Google AI Studio API for alerts
 - Local Gemma 4 E4B via Transformers for audio transcription (MPS on Apple Silicon)
 - Background scheduler, SQLite cache, FastAPI routes
 - Web search fallback via Gemma 4 when GDELT Doc fails
-- Ollama path: /api/chat endpoint, thinking-token extraction, prompt size reduction,
-  partial JSON recovery (_recover_truncated_json), _last_json_object for thinking field fallback
+- Ollama path: /api/chat, assistant pre-fill "{", temperature=1/top_p=0.95/top_k=64,
+  num_predict=2048, thinking-token fallback, _last_json_object, _recover_truncated_json
+- Google AI Studio: thinking_budget=512 (both configs), max_output_tokens=2048 (standard config)
 
 ### Mobile — In Progress
-- Feed screen — working, shows all 9 watch zones; 8h staleness check + 24h eviction on cold start
+- Feed screen — working, shows all 9 watch zones; stale-while-revalidate cold start (always fetches backend), 24h eviction
 - Alert Detail — working, back button, refresh
 - Map screen — individual markers per watch zone (no clustering), region name labels,
   +/- zoom and home button working; DISPLAY_OFFSETS for Gaza/Palestine/Israel overlap
@@ -146,10 +147,18 @@ docs/
 - Show a plan before implementing non-trivial changes — user preference confirmed
   across multiple sessions.
 - uv only, never pip — enforced; requirements.txt must never be created.
+- Ollama assistant pre-fill: messages array ends with {"role":"assistant","content":"{"}.
+  Model continues from "{" — suppresses preamble/thinking in content. Response brace
+  is prepended back before _extract_json. num_predict=2048 (model only generates the body).
+  temperature=1/top_p=0.95/top_k=64 — Gemma 4 defaults; pre-fill enforces JSON structure.
 - Ollama thinking tokens: Gemma 4 may put JSON in message['thinking'] and leave
-  message['content'] empty even with think=False. _last_json_object walks backwards
-  from the last } to find the last complete JSON block — immune to greedy-regex
-  false-positives when CoT prose contains intermediate brace characters.
+  message['content'] empty even with think=False. _last_json_object("{" + thinking)
+  anchors on "severity" key (only at top level of AlertOutput), rfind("{") before it,
+  then walks forward tracking brace depth — "{" prepended because pre-fill may have
+  absorbed the opening brace from the thinking field too.
+- Google AI Studio thinking_budget=512 in both _GENERATION_CONFIG and
+  _WEB_SEARCH_GENERATION_CONFIG — minimal budget lets model plan JSON structure before
+  outputting; budget=0 can conflict with response_schema enforcement.
 - backend/tests/conftest.py has an autouse fixture forcing OLLAMA_ENABLED=False
   for all tests so Ollama integration tests don't interfere with the Google AI
   Studio test suite.

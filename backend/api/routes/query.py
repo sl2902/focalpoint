@@ -36,6 +36,7 @@ from backend.api.dependencies import (
     get_redis,
 )
 from backend.api.schemas import QueryResponse, TranscribeResponse
+from backend.config import settings
 from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
 from backend.ingestion.cpj_connector import CPJConnector
 from backend.ingestion.gdelt_connector import GdeltConnector
@@ -136,8 +137,12 @@ async def query(
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
 
     use_web_search = len(gdelt_resp.articles) == 0
+    # Ollama path: cap articles at 3 to keep the prompt under ~1500 tokens.
+    # Scorer still uses the full article list — it's deterministic and cheap.
+    gdelt_articles = gdelt_resp.articles[:3] if settings.OLLAMA_ENABLED else gdelt_resp.articles
     logger.debug(
         f"query: region={region!r} gdelt_articles={len(gdelt_resp.articles)}"
+        f" (using {len(gdelt_articles)} for generator)"
         f" use_web_search={use_web_search}"
     )
 
@@ -155,7 +160,7 @@ async def query(
 
     alert = generator.generate(
         conflict_events=events,
-        gdelt_articles=gdelt_resp.articles,
+        gdelt_articles=gdelt_articles,
         gdelt_aggregate_tone=gdelt_resp.aggregate_tone,
         cpj_stats=cpj_stats,
         rsf_score=rsf_score,

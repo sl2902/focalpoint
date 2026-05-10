@@ -45,7 +45,7 @@
           "microphonePermission": "FocalPoint needs microphone access for voice queries.",
           "speechRecognitionPermission": "FocalPoint needs speech recognition to transcribe voice queries on-device."
         }
-      ]
+      ],
     ]
   }
 }

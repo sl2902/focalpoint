@@ -1533,3 +1533,218 @@ class TestResolveRedirectUrl:
 
         mock_resolve.assert_not_called()
         assert result.source_citations[0].id == _REAL_URL
+
+
+# ---------------------------------------------------------------------------
+# _citations_from_grounding_chunks — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestCitationsFromGroundingChunks:
+    """Unit tests for the _citations_from_grounding_chunks helper."""
+
+    def _fn(self, urls, **kwargs):
+        from backend.processors.gemma_client import _citations_from_grounding_chunks
+        return _citations_from_grounding_chunks(urls, **kwargs)
+
+    def test_real_urls_included(self) -> None:
+        urls = [("https://reuters.com/article/123", "Reuters article")]
+        result = self._fn(urls)
+        assert len(result) == 1
+        assert result[0]["id"] == "https://reuters.com/article/123"
+        assert result[0]["description"] == "Reuters article"
+
+    def test_redirect_urls_excluded(self) -> None:
+        urls = [
+            ("https://vertexaisearch.cloud.google.com/grounding-api-redirect/FAKE", "redirect"),
+            ("https://apnews.com/article/abc", "AP News article"),
+        ]
+        result = self._fn(urls)
+        assert len(result) == 1
+        assert result[0]["id"] == "https://apnews.com/article/abc"
+
+    def test_all_redirects_returns_empty(self) -> None:
+        urls = [
+            ("https://vertexaisearch.cloud.google.com/grounding-api-redirect/A", "r1"),
+            ("https://vertexaisearch.cloud.google.com/grounding-api-redirect/B", "r2"),
+        ]
+        assert self._fn(urls) == []
+
+    def test_empty_input_returns_empty(self) -> None:
+        assert self._fn([]) == []
+
+    def test_capped_at_max_citations(self) -> None:
+        urls = [(f"https://example.com/article-{i}", f"Article {i}") for i in range(10)]
+        result = self._fn(urls, max_citations=5)
+        assert len(result) == 5
+        assert result[0]["id"] == "https://example.com/article-0"
+        assert result[4]["id"] == "https://example.com/article-4"
+
+    def test_description_truncated_to_120_chars(self) -> None:
+        long_title = "A" * 200
+        urls = [("https://bbc.com/news/article", long_title)]
+        result = self._fn(urls)
+        assert result[0]["description"] == "A" * 120
+
+    def test_missing_title_falls_back_to_uri(self) -> None:
+        urls = [("https://reuters.com/world/article", "")]
+        result = self._fn(urls)
+        assert result[0]["description"] == "https://reuters.com/world/article"
+
+    def test_mixed_real_and_redirect_preserves_order(self) -> None:
+        urls = [
+            ("https://vertexaisearch.cloud.google.com/grounding-api-redirect/X", "skip"),
+            ("https://reuters.com/a", "Reuters"),
+            ("https://apnews.com/b", "AP"),
+        ]
+        result = self._fn(urls)
+        assert [r["id"] for r in result] == ["https://reuters.com/a", "https://apnews.com/b"]
+
+
+# ---------------------------------------------------------------------------
+# Grounding chunks-first citation path — integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestGroundingChunksFirstCitations:
+    """
+    Tests that source_citations are built from grounding_chunks when real publisher
+    URLs are available, rather than from Gemma's JSON output. This eliminates the
+    positional alignment assumption and guarantees real article URLs in citations.
+    """
+
+    _CHUNK_URL = "https://reuters.com/world/ukraine-safety-2026"
+    _CHUNK_TITLE = "Reuters: Ukraine journalist safety report 2026"
+    _DIFFERENT_GEMMA_URL = "https://different-source.com/article"
+
+    def _make_client(self, mock_client_cls, response_dict):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_client.models.generate_content.return_value = _mock_genai_response(
+            response_dict
+        )
+        return GemmaClient(api_key="fake-key")
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_chunk_citations_override_gemma_json_citations(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """Grounding chunks are authoritative: even when Gemma's JSON citation URL
+        is a different valid real URL, the chunk URL wins."""
+        mock_extract_urls.return_value = [(self._CHUNK_URL, self._CHUNK_TITLE)]
+        gemma_dict = _valid_alert_dict(
+            source_citations=[{
+                "id": self._DIFFERENT_GEMMA_URL,
+                "description": "Gemma chose this one",
+            }]
+        )
+        client = self._make_client(mock_client_cls, gemma_dict)
+        result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        assert len(result.source_citations) == 1
+        assert result.source_citations[0].id == self._CHUNK_URL
+        assert result.source_citations[0].description == self._CHUNK_TITLE
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_chunk_citations_replace_redirect_urls_in_gemma_json(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """When Gemma JSON has redirect URLs and chunks have real URLs, chunks win."""
+        mock_extract_urls.return_value = [(self._CHUNK_URL, self._CHUNK_TITLE)]
+        client = self._make_client(mock_client_cls, _vertex_alert_dict())
+        result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        assert result.source_citations[0].id == self._CHUNK_URL
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_gemma_json_citations_kept_when_no_real_chunks(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """When grounding returns no real publisher URLs, Gemma's JSON citations are kept."""
+        mock_extract_urls.return_value = []  # no chunks at all
+        client = self._make_client(mock_client_cls, _real_url_alert_dict())
+        result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        assert result.source_citations[0].id == _REAL_URL
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_gemma_json_citations_kept_when_all_chunks_are_redirects(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """When every chunk URL is a redirect, no real chunks → Gemma's citations kept."""
+        mock_extract_urls.return_value = [
+            ("https://vertexaisearch.cloud.google.com/grounding-api-redirect/A", "r1"),
+            ("https://vertexaisearch.cloud.google.com/grounding-api-redirect/B", "r2"),
+        ]
+        client = self._make_client(mock_client_cls, _real_url_alert_dict())
+        result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        assert result.source_citations[0].id == _REAL_URL
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_chunk_citations_capped_at_five(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """At most 5 citations are built from grounding chunks."""
+        mock_extract_urls.return_value = [
+            (f"https://source{i}.com/article", f"Source {i}") for i in range(8)
+        ]
+        client = self._make_client(mock_client_cls, _valid_alert_dict())
+        result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        assert len(result.source_citations) == 5
+        assert result.source_citations[0].id == "https://source0.com/article"
+        assert result.source_citations[4].id == "https://source4.com/article"
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_no_chunk_override_when_web_search_false(
+        self, mock_client_cls, mock_extract_urls
+    ) -> None:
+        """Chunk citation logic only applies when use_web_search=True."""
+        mock_extract_urls.return_value = [(self._CHUNK_URL, self._CHUNK_TITLE)]
+        gemma_dict = _valid_alert_dict(
+            source_citations=[{"id": self._DIFFERENT_GEMMA_URL, "description": "Gemma"}]
+        )
+        client = self._make_client(mock_client_cls, gemma_dict)
+        result = client.generate_alert("prompt", _REGION, use_web_search=False)
+
+        # _extract_grounding_urls should not be called; Gemma's citation is kept
+        mock_extract_urls.assert_not_called()
+        assert result.source_citations[0].id == self._DIFFERENT_GEMMA_URL
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client._resolve_redirect_url")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_redirect_resolution_fires_only_when_no_real_chunks(
+        self, mock_client_cls, mock_resolve, mock_extract_urls
+    ) -> None:
+        """_resolve_redirect_url is called for redirect citations only when
+        grounding returned no real chunk URLs (i.e., chunk override didn't fire)."""
+        real_resolved = "https://apnews.com/article/resolved"
+        mock_resolve.return_value = real_resolved
+        mock_extract_urls.return_value = []  # no chunks
+        client = self._make_client(mock_client_cls, _vertex_alert_dict())
+        result = client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        mock_resolve.assert_called_once_with(_VERTEX_URL)
+        assert result.source_citations[0].id == real_resolved
+
+    @patch("backend.processors.gemma_client._extract_grounding_urls")
+    @patch("backend.processors.gemma_client._resolve_redirect_url")
+    @patch("backend.processors.gemma_client.genai.Client")
+    def test_redirect_resolution_skipped_when_real_chunks_present(
+        self, mock_client_cls, mock_resolve, mock_extract_urls
+    ) -> None:
+        """_resolve_redirect_url must NOT be called when real grounding chunks
+        are available — citations come from chunks, not from Gemma's JSON."""
+        mock_extract_urls.return_value = [(self._CHUNK_URL, self._CHUNK_TITLE)]
+        client = self._make_client(mock_client_cls, _vertex_alert_dict())
+        client.generate_alert("prompt", _REGION, use_web_search=True)
+
+        mock_resolve.assert_not_called()

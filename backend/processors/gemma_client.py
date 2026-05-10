@@ -85,11 +85,15 @@ _ALERT_RESPONSE_SCHEMA = genai_types.Schema(
 
 # Generation config: temperature 0 for deterministic safety assessments.
 # response_schema enforces AlertOutput structure at the API level.
+# thinking_budget=512 gives the model a minimal planning budget before it
+# emits output tokens — a budget of 0 can conflict with response_schema
+# enforcement and increase validation failures.
 _GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
-    max_output_tokens=1024,
+    max_output_tokens=2048,
     response_mime_type="application/json",
     response_schema=_ALERT_RESPONSE_SCHEMA,
+    thinking_config=genai_types.ThinkingConfig(thinking_budget=512),
 )
 
 # Web search config: same temperature but includes the Google Search grounding
@@ -106,6 +110,7 @@ _WEB_SEARCH_GENERATION_CONFIG = genai_types.GenerateContentConfig(
     temperature=0.0,
     max_output_tokens=8192,
     tools=[{"google_search": {}}],
+    thinking_config=genai_types.ThinkingConfig(thinking_budget=512),
     system_instruction=(
         "You are a conflict intelligence analyst. "
         "Respond with a single JSON object only — no markdown, no prose. "
@@ -194,67 +199,63 @@ def _resolve_redirect_url(url: str, timeout: float = 4.0) -> str:
         return url
 
 
-def _apply_grounding_urls_to_citations(
-    citations: list,
+def _citations_from_grounding_chunks(
     grounding_urls: list[tuple[str, str]],
-) -> list:
+    max_citations: int = 5,
+) -> list[dict]:
     """
-    Replace vertexaisearch redirect citation IDs with real article URLs from grounding_chunks.
+    Build source_citation dicts directly from grounding_chunks real publisher URLs.
 
-    Iterates citations in order. For each citation whose id is a vertexaisearch
-    redirect URL, substitutes the next available real publisher URL from
-    grounding_urls (real URLs only — redirect fallbacks are skipped as
-    replacements). If real URLs are exhausted the redirect URL is kept as-is.
-    Logs both the redirect URL and the substituted real URL at DEBUG level for
-    comparison.
+    Only includes URLs that are NOT vertexaisearch redirects. Title is truncated to
+    120 chars to stay within the Citation.description field limit. Returns an empty
+    list when no real publisher URLs are available — the caller must then fall back
+    to Gemma's JSON citations (and optionally resolve individual redirect URLs).
+
+    Using chunks as the authoritative citation source eliminates the positional
+    alignment assumption that _apply_grounding_urls_to_citations relied on
+    (that citation[i] corresponds to chunk[i]), which broke whenever Gemma cited
+    sources in a different order than they appear in the metadata.
     """
-    real_urls = [
-        (uri, title)
-        for uri, title in grounding_urls
-        if "vertexaisearch.cloud.google.com" not in uri
-    ]
-    real_url_iter = iter(real_urls)
-    updated = []
-    for citation in citations:
-        if "vertexaisearch.cloud.google.com" in citation.id:
-            redirect_url = citation.id
-            try:
-                real_url, _title = next(real_url_iter)
-                logger.debug(
-                    f"grounding: redirect {redirect_url!r}"
-                    f" → real {real_url!r}"
-                )
-                citation = citation.model_copy(update={"id": real_url})
-            except StopIteration:
-                logger.debug(
-                    f"grounding: no real URL available for redirect {redirect_url!r}"
-                    f" — keeping redirect as fallback"
-                )
-        updated.append(citation)
-    return updated
+    result = []
+    for uri, title in grounding_urls:
+        if "vertexaisearch.cloud.google.com" in uri:
+            continue
+        result.append({"id": uri, "description": (title or uri)[:120]})
+        if len(result) >= max_citations:
+            break
+    return result
 
 
 def _last_json_object(text: str) -> str | None:
     """
-    Return the last complete top-level JSON object in *text*.
+    Return the AlertOutput JSON object from *text* (typically a thinking field).
 
-    Walks backwards from the final '}' tracking brace depth — O(n) and immune
-    to greedy-regex false-positives when the model's CoT prose itself contains
-    brace characters before the final JSON output block.
-    Returns None if no balanced {…} pair is found.
+    Strategy: find the last occurrence of '"severity"' — this key only appears
+    at the top level of an AlertOutput, never inside a citation sub-object (which
+    has "id" and "description"). Then find the '{' that immediately precedes it
+    (the opening of the AlertOutput dict), and walk forward to its matching '}'.
+
+    Walking back from the last '}' was insufficient — it found the closing brace
+    of the last citation entry {}, not the outer AlertOutput {}.
+
+    Returns None when "severity" is absent or the braces don't balance (truncated
+    output). Callers should then fall back to _recover_truncated_json.
     """
-    last = text.rfind("}")
-    if last == -1:
+    severity_pos = text.rfind('"severity"')
+    if severity_pos == -1:
+        return None
+    start = text.rfind("{", 0, severity_pos)
+    if start == -1:
         return None
     depth = 0
-    for i in range(last, -1, -1):
+    for i in range(start, len(text)):
         c = text[i]
-        if c == "}":
+        if c == "{":
             depth += 1
-        elif c == "{":
+        elif c == "}":
             depth -= 1
             if depth == 0:
-                return text[i : last + 1]
+                return text[start : i + 1]
     return None
 
 
@@ -419,7 +420,11 @@ class GemmaClient:
             _GEMMA_SEM.release()
 
     def _ollama_chat(
-        self, system_content: str, user_content: str, num_predict: int = 1024
+        self,
+        system_content: str,
+        user_content: str,
+        num_predict: int = 1024,
+        assistant_prefill: str | None = None,
     ) -> dict:
         """
         POST to the Ollama /api/chat endpoint and return the full response dict.
@@ -432,19 +437,28 @@ class GemmaClient:
         Generated text is at response["message"]["content"] (not response["response"]).
         Timing fields (total_duration, prompt_eval_count, eval_count, done_reason)
         remain at the top level, identical to /api/generate.
+
+        assistant_prefill: when set, appended as a final assistant turn so the model
+        continues from that string rather than generating it — useful for forcing
+        JSON output starting with "{" and suppressing any preamble or thinking tokens.
         """
         url = f"{settings.OLLAMA_BASE_URL}/api/chat"
+        messages: list[dict] = [
+            {"role": "system", "content": system_content},
+            {"role": "user",   "content": user_content},
+        ]
+        if assistant_prefill is not None:
+            messages.append({"role": "assistant", "content": assistant_prefill})
         payload = {
             "model": "gemma4:26b",
-            "messages": [
-                {"role": "system", "content": system_content},
-                {"role": "user",   "content": user_content},
-            ],
+            "messages": messages,
             "stream": False,
             "options": {
                 "num_ctx": 24576,
                 "num_predict": num_predict,
-                "temperature": 0,
+                "temperature": 1,
+                "top_p": 0.95,
+                "top_k": 64,
                 "think": False,
                 "thinking_budget": 0,
                 "thinkingBudget": 0,
@@ -539,7 +553,7 @@ class GemmaClient:
                 )
                 # augmented_prompt stays as the original data-gap prompt
 
-        num_predict = 8192
+        num_predict = 2048
 
         # Appended last so it is the final text the model reads before generating.
         # Placement at the end is intentional — models are more likely to follow
@@ -572,7 +586,9 @@ class GemmaClient:
         _ollama_options = {
             "num_ctx": 24576,
             "num_predict": num_predict,
-            "temperature": 0,
+            "temperature": 1,
+            "top_p": 0.95,
+            "top_k": 64,
             "think": False,
             "thinking_budget": 0,
         }
@@ -584,10 +600,16 @@ class GemmaClient:
             f" system_chars={len(system_content)} user_chars={len(user_content)}"
             f" options={_ollama_options}"
         )
+        logger.info(
+            f"ollama: using assistant pre-fill {{ to suppress thinking tokens"
+            f" for region={region!r} num_predict={num_predict}"
+        )
         t0 = time.perf_counter()
         try:
             resp_data = self._ollama_chat(
-                system_content, user_content, num_predict=num_predict
+                system_content, user_content,
+                num_predict=num_predict,
+                assistant_prefill="{",
             )
         except Exception as exc:
             logger.warning(
@@ -612,12 +634,18 @@ class GemmaClient:
         )
 
         raw_text = resp_data.get("message", {}).get("content", "")
+        # Prepend the assistant prefill brace so _extract_json receives a complete
+        # JSON object — the model only generated the body after "{".
+        if raw_text:
+            raw_text = "{" + raw_text
 
         # Fallback: some Ollama builds put the entire CoT+JSON in message['thinking']
         # and leave message['content'] empty even when think=False is set.
         # Walk backwards from the last } to find the last complete JSON object —
         # a greedy regex across the whole field would span intermediate brace usage
         # in the CoT prose and produce an unparseable blob.
+        # Prepend "{" here too — with the assistant prefill the thinking field may
+        # contain a JSON body without the opening brace.
         if not raw_text:
             thinking = resp_data.get("message", {}).get("thinking", "")
             if thinking:
@@ -625,7 +653,7 @@ class GemmaClient:
                     f"ollama: content empty, searching thinking field"
                     f" ({len(thinking)} chars) for JSON for region={region!r}"
                 )
-                candidate = _last_json_object(thinking)
+                candidate = _last_json_object("{" + thinking)
                 if candidate:
                     raw_text = candidate
                     logger.info(
@@ -794,6 +822,31 @@ class GemmaClient:
             return _fallback(region)
 
         raw_text = response.text
+
+        # Fallback: when thinking_budget=0 is ignored by older API versions the
+        # model may route its entire output into thought parts and leave the text
+        # field empty. Walk candidate parts looking for thought=True and apply
+        # _last_json_object — same strategy as the Ollama thinking-field fallback.
+        if not raw_text:
+            try:
+                candidate = (response.candidates or [None])[0]
+                parts = getattr(getattr(candidate, "content", None), "parts", None) or []
+                for part in parts:
+                    if getattr(part, "thought", False) and getattr(part, "text", None):
+                        thinking_text = part.text
+                        candidate_json = _last_json_object(thinking_text)
+                        if candidate_json:
+                            logger.info(
+                                f"gemma_client: extracted JSON from thinking part"
+                                f" ({len(thinking_text)} chars) for region={region!r}"
+                            )
+                            raw_text = candidate_json
+                            break
+            except Exception as exc:
+                logger.debug(
+                    f"gemma_client: thinking-part scan failed for region={region!r} — {exc}"
+                )
+
         if not raw_text:
             # Log finish_reason and safety_ratings to distinguish safety blocks
             # from other empty-response causes (e.g. schema constraint failures).
@@ -870,10 +923,16 @@ class GemmaClient:
 
         logger.debug(f"gemma_client: raw response for region={region!r} — {raw_text!r}")
 
-        # Extract real publisher URLs from grounding metadata while we still
-        # have the response object — these replace the expiring redirect URLs
-        # that the model embeds in its citation ids.
+        # Build citations from grounding_chunks first — authoritative real URLs.
+        # chunk_citations is non-empty only when grounding returned real publisher
+        # URLs (no vertexaisearch redirects). Computed here once and reused below.
         grounding_urls = _extract_grounding_urls(response) if use_web_search else []
+        chunk_citations = _citations_from_grounding_chunks(grounding_urls) if use_web_search else []
+        if chunk_citations:
+            logger.info(
+                f"gemma_client: {len(chunk_citations)} real grounding chunks for"
+                f" region={region!r} — will override Gemma JSON citations"
+            )
 
         try:
             raw_dict = _extract_json(raw_text)
@@ -891,28 +950,24 @@ class GemmaClient:
                 return self._structure_web_response(raw_text, region, grounding_urls)
             return _fallback(region)
 
+        # Chunks-first: inject real grounding URLs as citations before validation
+        # so the validator sees and marks them (low_quality_url, strip-invalid).
+        # Gemma's JSON severity/summary/region/timestamp are kept; only citations
+        # are overridden. Falls back to Gemma's JSON citations when no real chunks.
+        if chunk_citations:
+            raw_dict["source_citations"] = chunk_citations
+
         result = validate_output(raw_dict, region)
 
-        # When web search was active and the model embedded internal Vertex
-        # redirect URLs, replace them directly with real publisher URLs from
-        # grounding_chunks — no extra API round-trip needed.
-        if use_web_search and grounding_urls and any(
+        # Fallback: no real grounding chunks — resolve any vertexaisearch redirect
+        # URLs that Gemma put in its own JSON citations.
+        if use_web_search and not chunk_citations and any(
             "vertexaisearch.cloud.google.com" in c.id
             for c in result.source_citations
         ):
             logger.info(
-                f"gemma_client: replacing vertexaisearch redirect URLs with"
-                f" grounding chunk real URLs for region={region!r}"
-            )
-            updated = _apply_grounding_urls_to_citations(result.source_citations, grounding_urls)
-            result = result.model_copy(update={"source_citations": updated})
-        if use_web_search and not grounding_urls and any(
-            "vertexaisearch.cloud.google.com" in c.id
-            for c in result.source_citations
-        ):
-            logger.info(
-                f"gemma_client: grounding metadata absent for region={region!r}"
-                f" — resolving redirect URLs directly"
+                f"gemma_client: no real grounding chunks for region={region!r}"
+                f" — resolving redirect URLs in Gemma JSON citations"
             )
             resolved_citations = []
             for citation in result.source_citations:
@@ -944,15 +999,13 @@ class GemmaClient:
                     ) or grounding_urls
                     if use_web_search:
                         try:
-                            result = validate_output(_extract_json(retry_text), region)
-                            if retry_grounding_urls and any(
-                                "vertexaisearch.cloud.google.com" in c.id
-                                for c in result.source_citations
-                            ):
-                                updated = _apply_grounding_urls_to_citations(
-                                    result.source_citations, retry_grounding_urls
-                                )
-                                result = result.model_copy(update={"source_citations": updated})
+                            raw_retry = _extract_json(retry_text)
+                            retry_chunk_citations = _citations_from_grounding_chunks(
+                                retry_grounding_urls
+                            )
+                            if retry_chunk_citations:
+                                raw_retry["source_citations"] = retry_chunk_citations
+                            result = validate_output(raw_retry, region)
                         except json.JSONDecodeError:
                             result = self._structure_web_response(
                                 retry_text, region, retry_grounding_urls
@@ -1020,7 +1073,15 @@ class GemmaClient:
             logger.debug(
                 f"gemma_client: structured web response for region={region!r} — {text!r}"
             )
-            return validate_output(_extract_json(text), region)
+            raw_dict = _extract_json(text)
+            chunk_citations = _citations_from_grounding_chunks(urls)
+            if chunk_citations:
+                logger.info(
+                    f"gemma_client: _structure_web_response: overriding with"
+                    f" {len(chunk_citations)} chunk citations for region={region!r}"
+                )
+                raw_dict["source_citations"] = chunk_citations
+            return validate_output(raw_dict, region)
         except Exception as exc:
             logger.warning(
                 f"gemma_client: _structure_web_response failed for region={region!r}"

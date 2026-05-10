@@ -63,7 +63,12 @@ function CitationRow({ citation, isLast }: { citation: Citation; isLast: boolean
     <>
       {kind === 'link' ? (
         <Pressable
-          onPress={() => Linking.openURL(citation.id)}
+          onPress={() => {
+            console.log('[citation] opening URL:', citation.id);
+            Linking.openURL(citation.id).catch((err) =>
+              console.log('Failed to open URL:', err)
+            );
+          }}
           style={({ pressed }) => pressed && styles.pressed}
         >
           {inner}

@@ -65,11 +65,20 @@ When `settings.OLLAMA_ENABLED=True`, `generate_alert` is routed to
 - **Endpoint**: `/api/chat` (not `/api/generate`) — applies the model's chat template
   so the model generates output rather than silently consuming tokens. Response is at
   `message['content']`, not `response`.
+- **Assistant pre-fill**: the messages array ends with `{"role": "assistant", "content": "{"}`.
+  The model continues from the opening brace rather than generating it, which suppresses
+  preamble text and thinking tokens in the content field. The response brace is prepended
+  back before JSON extraction. `num_predict=2048` (down from 8192) — the model only
+  generates the JSON body after the pre-filled `{`.
+- **Sampling**: `temperature=1, top_p=0.95, top_k=64` — Gemma 4's default sampling
+  parameters. The assistant pre-fill enforces JSON structure so greedy decoding
+  (`temperature=0`) is not needed.
 - **Thinking tokens**: Gemma 4 may route its CoT reasoning into `message['thinking']`
   and leave `message['content']` empty even when `think: False` and `thinking_budget: 0`
-  are set. Fallback: `_last_json_object(thinking)` walks backwards from the last `}`
-  to find the last complete top-level JSON block (immune to greedy-regex false-positives
-  when CoT prose contains intermediate brace characters).
+  are set. Fallback: `_last_json_object("{" + thinking)` anchors on `"severity"` (only
+  present at the top level of AlertOutput), finds the enclosing `{`, then walks forward
+  tracking brace depth — immune to greedy-regex false-positives. `"{"` is prepended to
+  the thinking field before search because the pre-fill may have absorbed the opening brace.
 - **Prompt splitting**: the assembled prompt is split at the first `[USER QUERY` marker
   into a `system` message and a `user` message so the chat template applies correctly.
   `"DO NOT use extended thinking. Respond with JSON immediately."` is prepended to the
@@ -77,7 +86,7 @@ When `settings.OLLAMA_ENABLED=True`, `generate_alert` is routed to
 - **Prompt size**: Ollama path uses tighter limits — `OLLAMA_MAX_EVENTS=10`,
   `OLLAMA_MAX_GDELT=3`, `OLLAMA_TITLE_MAX=100`, `OLLAMA_SUMMARY_MAX=150` (vs 20/10
   for the Google AI Studio path) — to keep prompts under ~1500 tokens and leave the
-  model ≥6000 generation tokens within `num_predict=8192`.
+  model ≥1500 generation tokens within `num_predict=2048`.
 - **Truncation recovery**: if the model hits `num_predict` and the JSON is truncated,
   `_recover_truncated_json` extracts severity (required), summary (partial OK), and
   any complete citation objects before the cutoff.
@@ -334,10 +343,18 @@ SQLite (`services/cache.ts`):
 - `getNewestFetchedAt(days)` — MAX(fetched_at) for staleness check
 - `deleteAlertsOlderThan(ageMs)` — bulk eviction called on cold start
 
-**Feed staleness and eviction (`hooks/useAlerts.ts`):**
-- Cold-start effect: evicts rows older than 24 h, then checks MAX(fetched_at) age.
-  If age > 8 h (stale), fetches all regions from backend and overwrites SQLite.
-  Otherwise serves SQLite directly.
+**Feed data flow (`hooks/useAlerts.ts`):**
+- **Cold-start stale-while-revalidate**: on mount the effect fires two parallel
+  operations — (1) read SQLite and display immediately, (2) fetch backend unconditionally.
+  No staleness age check. When the backend fetch resolves, `upsertAlert` is called for
+  every returned alert before `applyAlerts` updates React state. The `cancelled` guard
+  (component unmount) is placed *after* the SQLite write so a tab switch during the
+  in-flight fetch does not skip the write — `useFocusEffect` reads the fresh data on
+  the next tab return.
+- **`useFocusEffect`**: reads SQLite only (fast path for tab switching and back-navigation
+  from Alert Detail). Never hits the backend.
+- `getLatestAlertsByDays` removes the `getNewestFetchedAt` staleness gate removed — SQLite
+  is a display cache only; freshness is guaranteed by the always-on cold-start fetch.
 - `isLoading` starts `true` when the module-level `_alertsCache` is empty (fresh
   install or first tab mount). Cleared after the first `useFocusEffect` SQLite read
   so the feed never flashes `EmptyRegionCard` on mount.
