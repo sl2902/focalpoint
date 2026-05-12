@@ -62,34 +62,39 @@ Files:
 When `settings.OLLAMA_ENABLED=True`, `generate_alert` is routed to
 `_ollama_generate_alert` instead of the Google AI Studio path. Key differences:
 
-- **Endpoint**: `/api/chat` (not `/api/generate`) — applies the model's chat template
-  so the model generates output rather than silently consuming tokens. Response is at
-  `message['content']`, not `response`.
-- **Assistant pre-fill**: the messages array ends with `{"role": "assistant", "content": "{"}`.
-  The model continues from the opening brace rather than generating it, which suppresses
-  preamble text and thinking tokens in the content field. The response brace is prepended
-  back before JSON extraction. `num_predict=2048` (down from 8192) — the model only
-  generates the JSON body after the pre-filled `{`.
-- **Sampling**: `temperature=1, top_p=0.95, top_k=64` — Gemma 4's default sampling
-  parameters. The assistant pre-fill enforces JSON structure so greedy decoding
-  (`temperature=0`) is not needed.
-- **Thinking tokens**: Gemma 4 may route its CoT reasoning into `message['thinking']`
-  and leave `message['content']` empty even when `think: False` and `thinking_budget: 0`
-  are set. Fallback: `_last_json_object("{" + thinking)` anchors on `"severity"` (only
-  present at the top level of AlertOutput), finds the enclosing `{`, then walks forward
-  tracking brace depth — immune to greedy-regex false-positives. `"{"` is prepended to
-  the thinking field before search because the pre-fill may have absorbed the opening brace.
-- **Prompt splitting**: the assembled prompt is split at the first `[USER QUERY` marker
-  into a `system` message and a `user` message so the chat template applies correctly.
-  `"DO NOT use extended thinking. Respond with JSON immediately."` is prepended to the
-  system message. `/no_think` is prepended to the full prompt before splitting.
+- **Endpoint**: `POST /api/generate` (not `/api/chat`) — the CLI uses `/api/generate`
+  internally and works correctly; `/api/chat` consistently failed with thinking tokens
+  consuming all available output tokens before any JSON was emitted. Response is at
+  `response["response"]`, not `response["message"]["content"]`.
+- **Chat template applied manually**: the prompt string is formatted as
+  `<start_of_turn>user\n{system}\n\n{user}<end_of_turn>\n<start_of_turn>model\n`.
+  Gemma 4 has no dedicated system role in its template; system instructions are
+  prepended to the user turn.
+- **`think: false` at top level**: placed as a top-level payload key (not inside
+  `options`) — this is the correct Ollama API position. `options` contains only
+  sampling parameters.
+- **Structured output**: `"format": _ALERT_FORMAT_SCHEMA` passed as a top-level
+  payload key. Ollama enforces the JSON schema on `response["response"]`, analogous
+  to Gemini's `response_schema`. No assistant pre-fill needed.
+- **Sampling**: `temperature=1, top_p=0.95, top_k=64, repeat_penalty=1.3,
+  repeat_last_n=128`. No `num_predict` — model default applies. `repeat_penalty`
+  is required on `/api/generate` to prevent repetition loops.
+- **Prompt splitting**: the assembled prompt is split at the first `[USER QUERY`
+  marker; everything before becomes the system content, everything from `[USER QUERY`
+  onward becomes the user content. These are combined into the manual chat template.
+- **Post-parse sanitisation**: markdown fences stripped before `_extract_json`;
+  spaces inside URLs are `%20`-encoded to prevent JSON parse failures; `region` and
+  `timestamp` are backfilled from the known call parameters if absent after parse.
+- **Citation sanitisation** (`output_validator.py`): before Pydantic validation,
+  each citation dict is normalised to `{id, description}` only (drops any unexpected
+  keys the model echoed back, e.g. `low_quality_url`). Citation IDs containing
+  thinking-delimiter tokens (`<|channel|>`, `<start_of_turn>`, etc.) are sanitised
+  by extracting the URL/ID prefix before the delimiter, or dropped if unrecoverable.
 - **Prompt size**: Ollama path uses tighter limits — `OLLAMA_MAX_EVENTS=10`,
   `OLLAMA_MAX_GDELT=3`, `OLLAMA_TITLE_MAX=100`, `OLLAMA_SUMMARY_MAX=150` (vs 20/10
-  for the Google AI Studio path) — to keep prompts under ~1500 tokens and leave the
-  model ≥1500 generation tokens within `num_predict=2048`.
-- **Truncation recovery**: if the model hits `num_predict` and the JSON is truncated,
-  `_recover_truncated_json` extracts severity (required), summary (partial OK), and
-  any complete citation objects before the cutoff.
+  for the Google AI Studio path).
+- **Truncation recovery**: `_recover_truncated_json` extracts severity (required),
+  summary (partial OK), and any complete citation objects before a truncation cutoff.
 - **Web search**: calls `ollama.com/api/web_search` (requires `OLLAMA_API_KEY`),
   injects results as a `[WEB SEARCH RESULTS]` block before `[USER QUERY]`. Max 3
   results; content truncated to 200 chars each.
@@ -207,12 +212,17 @@ All inputs validated by Pydantic before reaching any downstream layer.
 Rate limiting via slowapi applied at route level.
 
 Key endpoints:
+- GET /alerts/feed?days=N     # newest alert per region for the given days window, ordered by severity
 - GET /alerts/{region}        # latest alerts for a region
 - GET /alerts/watchzone       # alerts for journalist's pinned zone
 - POST /query                 # sanitised natural language query → grounded alert
 - POST /transcribe            # audio → text via local Gemma 4 E4B; returns 503 if model unavailable
 - GET /map/markers            # incident markers for map view
 - GET /health                 # deployment health check
+
+`GET /alerts/feed` uses `DENSE_RANK() OVER (PARTITION BY region, days ORDER BY created_at DESC)`
+to select exactly one row per region — the newest `created_at` for the requested `days` value.
+The `days` query param (default 1) is passed from the mobile client's configured time window.
 
 ### POST /transcribe — local ASR
 

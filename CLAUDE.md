@@ -105,7 +105,7 @@ docs/
 - Do not bundle multiple unrelated changes in one commit
 - Run pytest after every backend change before moving on
 
-## Current Status (May 10, 2026)
+## Current Status (May 12, 2026)
 
 ### Backend — Complete (551 tests)
 - GDELT Cloud + Doc, CPJ, RSF connectors
@@ -114,12 +114,17 @@ docs/
 - Local Gemma 4 E4B via Transformers for audio transcription (MPS on Apple Silicon)
 - Background scheduler, SQLite cache, FastAPI routes
 - Web search fallback via Gemma 4 when GDELT Doc fails
-- Ollama path: /api/chat, assistant pre-fill "{", temperature=1/top_p=0.95/top_k=64,
-  num_predict=2048, thinking-token fallback, _last_json_object, _recover_truncated_json
+- Ollama path: POST /api/generate, manual Gemma chat template, think:false at top-level
+  payload, format=_ALERT_FORMAT_SCHEMA for structured output, temperature=1/top_p=0.95/
+  top_k=64/repeat_penalty=1.3/repeat_last_n=128, no num_predict, _recover_truncated_json
 - Google AI Studio: thinking_budget=512 (both configs), max_output_tokens=2048 (standard config)
+- Feed query: DENSE_RANK() OVER (PARTITION BY region, days ORDER BY created_at DESC),
+  days param forwarded from request (default 1)
+- Citation sanitisation: unexpected keys stripped, thinking-delimiter tokens removed from IDs
 
 ### Mobile — In Progress
-- Feed screen — working, shows all 9 watch zones; stale-while-revalidate cold start (always fetches backend), 24h eviction
+- Feed screen — working, shows all 9 watch zones; stale-while-revalidate cold start (always
+  fetches backend), 24h eviction, 5-minute background sync interval
 - Alert Detail — working, back button, refresh
 - Map screen — individual markers per watch zone (no clustering), region name labels,
   +/- zoom and home button working; DISPLAY_OFFSETS for Gaza/Palestine/Israel overlap
@@ -128,7 +133,7 @@ docs/
 - Voice UX — mic meter pending, audio chip UX fix pending
 
 ### Pending
-- Ollama: production testing and validation (core path implemented)
+- Ollama: production testing and validation (format parameter approach implemented)
 - Cloud Run deployment
 - Demo video recording
 - Kaggle writeup
@@ -147,18 +152,18 @@ docs/
 - Show a plan before implementing non-trivial changes — user preference confirmed
   across multiple sessions.
 - uv only, never pip — enforced; requirements.txt must never be created.
-- Ollama assistant pre-fill: messages array ends with {"role":"assistant","content":"{"}.
-  Model continues from "{" — suppresses preamble/thinking in content. Response brace
-  is prepended back before _extract_json. num_predict=2048 (model only generates the body).
-  temperature=1/top_p=0.95/top_k=64 — Gemma 4 defaults; pre-fill enforces JSON structure.
-- Ollama thinking tokens: Gemma 4 may put JSON in message['thinking'] and leave
-  message['content'] empty even with think=False. _last_json_object("{" + thinking)
-  anchors on "severity" key (only at top level of AlertOutput), rfind("{") before it,
-  then walks forward tracking brace depth — "{" prepended because pre-fill may have
-  absorbed the opening brace from the thinking field too.
+- Ollama path uses POST /api/generate with manual Gemma chat template
+  (<start_of_turn>user\n{system}\n\n{user}<end_of_turn>\n<start_of_turn>model\n).
+  think:false is a TOP-LEVEL payload key, not inside options. format=_ALERT_FORMAT_SCHEMA
+  enforces structured JSON output (analogous to Gemini response_schema). No num_predict —
+  model default applies. repeat_penalty=1.3 required to prevent loops on /api/generate.
+  Response is at response["response"], not response["message"]["content"].
 - Google AI Studio thinking_budget=512 in both _GENERATION_CONFIG and
   _WEB_SEARCH_GENERATION_CONFIG — minimal budget lets model plan JSON structure before
   outputting; budget=0 can conflict with response_schema enforcement.
 - backend/tests/conftest.py has an autouse fixture forcing OLLAMA_ENABLED=False
   for all tests so Ollama integration tests don't interfere with the Google AI
   Studio test suite.
+- Feed endpoint GET /alerts/feed?days=N passes days to store.get_latest_per_region
+  which uses DENSE_RANK() to pick newest row per region for that days window.
+  Scheduler always writes days=1; mobile sends its configured days value.
