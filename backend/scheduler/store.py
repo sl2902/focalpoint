@@ -7,7 +7,9 @@ or Gemma 4 on every request.
 Schema: one row per (region, days) combination. upsert_alert replaces
 the existing row in-place so different day-window queries are cached
 independently. The background scheduler always writes days=1; the feed
-endpoint returns only days=1 rows.
+endpoint accepts a days query param (default 1) and returns only rows for
+that days value — non-days=1 rows only exist if written by an on-demand
+GET /alerts/{region}?days=N request (e.g. EmptyRegionCard load or Detail refresh).
 
 Cache freshness: get_cached_alert compares created_at (UTC ISO-8601)
 against now - max_age_hours. String comparison is correct here because

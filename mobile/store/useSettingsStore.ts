@@ -36,7 +36,7 @@ const DEFAULTS: Omit<
   watchZone: 'Gaza',
   watchZoneArea: '',
   language: 'en',
-  days: 7,
+  days: 1,
   discreetMode: false,
   notifications: true,
 };
