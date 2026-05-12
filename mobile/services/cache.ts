@@ -85,6 +85,11 @@ export async function upsertAlert(alert: AlertResponse, days: number): Promise<v
   // Trim to MAX_PER_REGION rows per (region, days). Two queries avoid the
   // expo-sqlite subquery parameter binding bug (WHERE ? inside a subquery
   // gets NULL). OFFSET is hardcoded so only region and days are bound.
+  const countBefore = await db.getFirstAsync<{ n: number }>(
+    'SELECT COUNT(*) AS n FROM alerts WHERE region = ? AND days = ?',
+    alert.region,
+    days,
+  );
   const cutoff = await db.getFirstAsync<{ fetched_at: number }>(
     `SELECT fetched_at FROM alerts WHERE region = ? AND days = ? ORDER BY fetched_at DESC LIMIT 1 OFFSET ${MAX_PER_REGION - 1}`,
     alert.region,
@@ -97,6 +102,14 @@ export async function upsertAlert(alert: AlertResponse, days: number): Promise<v
       days,
       cutoff.fetched_at,
     );
+    const countAfter = await db.getFirstAsync<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM alerts WHERE region = ? AND days = ?',
+      alert.region,
+      days,
+    );
+    console.log(`[cache] trim ${alert.region} days=${days}: ${countBefore?.n} → ${countAfter?.n} rows`);
+  } else {
+    console.log(`[cache] no trim needed for ${alert.region} days=${days}: ${countBefore?.n} rows (max ${MAX_PER_REGION})`);
   }
 }
 
@@ -123,9 +136,10 @@ export async function getLatestAlertsByDays(days: number): Promise<AlertResponse
     ];
     return sortBySeverity(result);
   }
+  console.log('[cache] SQL:', `SELECT region, days, fetched_at, data FROM alerts WHERE days = ${days} ORDER BY fetched_at DESC`);
   const db = await getDb();
-  const rows = await db.getAllAsync<{ region: string; data: string }>(
-    'SELECT region, data FROM alerts WHERE days = ? ORDER BY fetched_at DESC',
+  const rows = await db.getAllAsync<{ region: string; days: number; fetched_at: number; data: string }>(
+    'SELECT region, days, fetched_at, data FROM alerts WHERE days = ? ORDER BY fetched_at DESC',
     days,
   );
   // Two passes: first collect newest valid alert per region, then collect

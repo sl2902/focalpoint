@@ -4,9 +4,11 @@ import type { AlertResponse } from '../types/api';
 /**
  * Fetch the latest cached alert per region from the backend store.
  * The backend serves this from SQLite — no Gemma calls are made.
+ * days is forwarded so the backend returns the correct time-window rows.
  */
-export async function fetchFeed(): Promise<AlertResponse[]> {
-  return apiGet<AlertResponse[]>('/alerts/feed');
+export async function fetchFeed(days: number): Promise<AlertResponse[]> {
+  console.log(`[alerts] fetchFeed: GET /alerts/feed?days=${days}`);
+  return apiGet<AlertResponse[]>('/alerts/feed', { params: { days } });
 }
 
 /**

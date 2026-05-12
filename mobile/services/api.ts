@@ -52,6 +52,7 @@ export async function apiGet<T>(path: string, options: GetOptions = {}): Promise
       url.searchParams.set(key, String(value));
     }
   }
+  console.log('[api] GET', url.toString());
 
   const response = await fetch(url.toString(), {
     method: 'GET',

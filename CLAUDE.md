@@ -167,3 +167,16 @@ docs/
 - Feed endpoint GET /alerts/feed?days=N passes days to store.get_latest_per_region
   which uses DENSE_RANK() to pick newest row per region for that days window.
   Scheduler always writes days=1; mobile sends its configured days value.
+- Mobile useRefreshStore has three concerns: (1) refreshingRegion for FallbackCard
+  retries, (2) loadingRegions Set for EmptyRegionCard loads and Alert Detail refreshes,
+  (3) completedRefreshVersion counter bumped after every successful upsert. AlertCard
+  and EmptyRegionCard subscribe to loadingRegions directly — no props needed.
+- Alert Detail refresh is fire-and-forget: startLoad → fire fetch → router.back().
+  Feed card spins immediately via loadingRegions. On completion: upsertAlert →
+  bumpCompletedRefresh → Feed useEffect([completedRefreshVersion, revalidate]) fires →
+  revalidate() re-reads SQLite → card transitions. revalidate must be in the dep array
+  to avoid a stale-closure bug when days changes.
+- upsertAlert always called as upsertAlert(a, a.days ?? days) — backend's a.days is
+  authoritative for which days bucket a row belongs to.
+- useEffect([days]) in useAlerts fetches backend first (not SQLite-only) because
+  SQLite may be empty for a new days window.

@@ -101,14 +101,15 @@ export function useAlerts(): UseAlertsResult {
     }).catch(() => {});
 
     // Always fetch from backend on cold start — no staleness gate.
-    console.log('[alerts] cold start — always fetching from backend');
-    fetchFeed()
+    console.log(`[alerts] cold start — fetching from backend days=${days}`);
+    fetchFeed(days)
       .then(async (feed) => {
         // Always write to SQLite regardless of mount state — useFocusEffect must
         // read fresh data on the next tab switch even if this component unmounted
         // during the fetch (e.g. user switched tabs while the request was in-flight).
         console.log(`[alerts] writing ${feed.length} backend alerts to local SQLite after cold start fetch`);
-        await Promise.all(feed.map((a) => upsertAlert(a, days)));
+        await Promise.all(feed.map((a) => upsertAlert(a, a.days ?? days)));
+        console.log(`[alerts] SQLite read: getLatestAlertsByDays(${days})`);
         const fresh = await getLatestAlertsByDays(days);
         // Only update React state if still mounted.
         if (!cancelled) {
@@ -125,15 +126,29 @@ export function useAlerts(): UseAlertsResult {
     };
   }, [isConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-read SQLite when the days window changes (covers background changes).
+  // Fetch from backend when the days window changes — SQLite may be empty for
+  // the new days value so reading it alone would show a blank feed.
   useEffect(() => {
     let cancelled = false;
-    getLatestAlertsByDays(days).then((cached) => {
-      if (!cancelled) {
-        applyAlerts(cached);
-        console.log(`[alerts] ${cached.length} alerts served from SQLite (days=${days} change)`);
-      }
-    });
+    console.log(`[alerts] days changed to ${days} — fetching from backend`);
+    fetchFeed(days)
+      .then(async (feed) => {
+        await Promise.all(feed.map((a) => upsertAlert(a, a.days ?? days)));
+        console.log(`[alerts] SQLite read: getLatestAlertsByDays(${days})`);
+        const fresh = await getLatestAlertsByDays(days);
+        if (!cancelled) {
+          applyAlerts(fresh);
+          console.log(`[alerts] ${fresh.length} alerts served from backend (days=${days} change)`);
+        }
+      })
+      .catch(async () => {
+        // Network unavailable — show whatever SQLite has for this window.
+        const cached = await getLatestAlertsByDays(days);
+        if (!cancelled) {
+          applyAlerts(cached);
+          console.log(`[alerts] ${cached.length} alerts served from SQLite (days=${days} change, network error)`);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -145,9 +160,9 @@ export function useAlerts(): UseAlertsResult {
   useEffect(() => {
     if (!isConnected) return;
     const id = setInterval(() => {
-      fetchFeed()
+      fetchFeed(days)
         .then(async (feed) => {
-          await Promise.all(feed.map((a) => upsertAlert(a, days)));
+          await Promise.all(feed.map((a) => upsertAlert(a, a.days ?? days)));
           const fresh = await getLatestAlertsByDays(days);
           applyAlerts(fresh);
           console.log(`[alerts] background sync — ${fresh.length} alerts refreshed`);
@@ -166,12 +181,13 @@ export function useAlerts(): UseAlertsResult {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
+      console.log(`[alerts] SQLite read: getLatestAlertsByDays(${days})`);
       Promise.all([getLatestAlertsByDays(days), getNewestFetchedAt(days)]).then(([cached, newestTs]) => {
         if (!cancelled) {
           applyAlerts(cached);
           setIsLoading(false);
           const ts = newestTs != null ? new Date(newestTs).toISOString() : 'none';
-          console.log(`[alerts] ${cached.length} alerts served from SQLite (focus, newest_fetched_at=${ts})`);
+          console.log(`[alerts] ${cached.length} alerts served from SQLite (focus, days=${days}, newest_fetched_at=${ts})`);
         }
       }).catch(() => {
         if (!cancelled) setIsLoading(false);
@@ -213,16 +229,20 @@ export function useAlerts(): UseAlertsResult {
   }, [refreshingRegion, days]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const revalidate = useCallback((): Promise<void> => {
-    return getLatestAlertsByDays(days).then(applyAlerts);
+    console.log('[alerts] revalidate: reading SQLite for days=', days);
+    return getLatestAlertsByDays(days).then((result) => {
+      console.log('[feed] revalidate returned', result.length, 'alerts, regions:', result.map((a) => a.region));
+      applyAlerts(result);
+    });
   }, [days, applyAlerts]);
 
   // Pull-to-refresh always hits the backend — never reads SQLite only.
   const refresh = useCallback(() => {
     if (refreshing) return;
     setRefreshing(true);
-    fetchFeed()
+    fetchFeed(days)
       .then(async (feed) => {
-        await Promise.all(feed.map((a) => upsertAlert(a, days)));
+        await Promise.all(feed.map((a) => upsertAlert(a, a.days ?? days)));
         const cached = await getLatestAlertsByDays(days);
         console.log(`[alerts] ${cached.length} alerts served from backend (pull-to-refresh)`);
         applyAlerts(cached);

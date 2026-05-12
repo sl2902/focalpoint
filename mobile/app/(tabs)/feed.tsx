@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -32,8 +32,17 @@ export default function FeedScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { alerts, isLoading, days, refresh, refreshing, revalidate } = useAlerts();
-  const { refreshingRegion } = useRefreshStore();
-  const [loadingRegion, setLoadingRegion] = useState<string | null>(null);
+  const { refreshingRegion, loadingRegions, startLoad, endLoad, completedRefreshVersion, bumpCompletedRefresh } = useRefreshStore();
+
+  // Re-read SQLite when Alert Detail completes a refresh so the feed card
+  // updates immediately without requiring pull-to-refresh or navigation.
+  // useRef guard skips the initial mount — only fires on subsequent bumps.
+  const isFirstRender = useRef(true);
+  useEffect(() => {
+    if (isFirstRender.current) { isFirstRender.current = false; return; }
+    console.log('[feed] completedRefreshVersion changed, calling revalidate');
+    revalidate();
+  }, [completedRefreshVersion, revalidate]);
 
   // Regions that have no cached alert for the current days window.
   const loadedSet = new Set(alerts.map((a) => a.region));
@@ -69,19 +78,19 @@ export default function FeedScreen() {
   };
 
   const handleLoad = useCallback(async (region: string) => {
-    if (loadingRegion) return;
-    setLoadingRegion(region);
+    if (loadingRegions.has(region)) return;
+    startLoad(region);
     try {
       const fresh = await fetchAlertForRegion(region, days);
-      await upsertAlert(fresh, days);
-      console.log(`[feed] fetch complete for ${region}, triggering revalidate`);
-      await revalidate();
+      await upsertAlert(fresh, fresh.days ?? days);
+      console.log('[alerts] upsertAlert complete for', region, ', now bumping completedRefresh');
+      bumpCompletedRefresh();
     } catch {
       // Card stays empty — user can retry.
     } finally {
-      setLoadingRegion(null);
+      endLoad(region);
     }
-  }, [loadingRegion, days, revalidate]);
+  }, [loadingRegions, startLoad, endLoad, days, bumpCompletedRefresh]);
 
   const renderItem = ({ item }: { item: FeedItem }) => {
     if (item.type === 'alert') {
@@ -106,11 +115,6 @@ export default function FeedScreen() {
         region={item.region}
         days={days}
         onLoad={() => handleLoad(item.region)}
-        loading={loadingRegion === item.region}
-        disabled={
-          (loadingRegion !== null && loadingRegion !== item.region) ||
-          refreshingRegion !== null
-        }
       />
     );
   };

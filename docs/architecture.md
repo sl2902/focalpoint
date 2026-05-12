@@ -339,8 +339,16 @@ Voice recording flow:
 - `watchZone` — journalist's pinned region
 
 `useRefreshStore` (Zustand, ephemeral):
-- `refreshingRegion` — tracks which region a background refresh is running,
+- `refreshingRegion` — tracks which region a FallbackCard retry is running,
   used to disable other load buttons and show a spinner on FallbackCard
+- `loadingRegions: Set<string>` — regions with an in-flight fetch (Alert Detail
+  refresh or EmptyRegionCard load). Survives React Navigation unmounts because
+  Zustand store is module-level. `AlertCard` and `EmptyRegionCard` subscribe
+  directly to this set so they show spinners without prop drilling.
+- `completedRefreshVersion: number` — incremented by `bumpCompletedRefresh()` after
+  every successful upsert (Alert Detail refresh, EmptyRegionCard load). Feed's
+  `useEffect([completedRefreshVersion, revalidate])` watches this counter and calls
+  `revalidate()` to re-read SQLite and flip the card type without navigation.
 
 SQLite (`services/cache.ts`):
 - Promise-based singleton `_dbPromise` prevents init races on cold start
@@ -356,24 +364,44 @@ SQLite (`services/cache.ts`):
 **Feed data flow (`hooks/useAlerts.ts`):**
 - **Cold-start stale-while-revalidate**: on mount the effect fires two parallel
   operations — (1) read SQLite and display immediately, (2) fetch backend unconditionally.
-  No staleness age check. When the backend fetch resolves, `upsertAlert` is called for
-  every returned alert before `applyAlerts` updates React state. The `cancelled` guard
-  (component unmount) is placed *after* the SQLite write so a tab switch during the
-  in-flight fetch does not skip the write — `useFocusEffect` reads the fresh data on
-  the next tab return.
+  No staleness age check. When the backend fetch resolves, `upsertAlert(a, a.days ?? days)`
+  is called for every returned alert (uses backend's authoritative `a.days` bucket, not the
+  store value) before `applyAlerts` updates React state. The `cancelled` guard (component
+  unmount) is placed *after* the SQLite write so a tab switch during the in-flight fetch
+  does not skip the write — `useFocusEffect` reads the fresh data on the next tab return.
+- **`useEffect([days])`**: when the journalist changes the time window, fetches backend
+  immediately (SQLite may be empty for the new window) before reading SQLite. Same
+  `upsertAlert(a, a.days ?? days)` pattern ensures rows are stored under the correct
+  days bucket.
 - **`useFocusEffect`**: reads SQLite only (fast path for tab switching and back-navigation
   from Alert Detail). Never hits the backend.
-- `getLatestAlertsByDays` removes the `getNewestFetchedAt` staleness gate removed — SQLite
-  is a display cache only; freshness is guaranteed by the always-on cold-start fetch.
+- **`fetchFeed(days)`**: passes `?days=N` to `GET /alerts/feed` so the backend returns
+  the correct time window. Missing this param was a prior bug that defaulted to `days=1`.
 - `isLoading` starts `true` when the module-level `_alertsCache` is empty (fresh
   install or first tab mount). Cleared after the first `useFocusEffect` SQLite read
   so the feed never flashes `EmptyRegionCard` on mount.
 - `_alertsCache` is module-level (survives component remounts within the same JS
   runtime) — `useState` initialises from it so the feed renders existing data
   immediately on remount without waiting for the SQLite read.
-- `revalidate()` re-reads SQLite and calls `setAlerts` — called by `handleLoad` after
-  a successful per-region fetch so the card transitions to `AlertCard` immediately
-  without requiring navigation.
+- `revalidate()` re-reads SQLite and calls `applyAlerts`. It is triggered by
+  `completedRefreshVersion` (not called directly from `handleLoad`) — this avoids
+  a stale-closure bug where a direct call would capture an outdated `days` value.
+
+**Alert Detail refresh (fire-and-forget):**
+- `handleRefresh` calls `startLoad(region)`, fires the fetch without awaiting it,
+  then calls `router.back()` immediately. The user returns to Feed while the fetch
+  runs in the background. `AlertCard` subscribes to `loadingRegions` directly so it
+  shows a spinner and "Refreshing assessment…" without any prop from the screen.
+- On completion: `upsertAlert(fresh, fresh.days ?? days)` → `bumpCompletedRefresh()`
+  → Feed's `useEffect([completedRefreshVersion, revalidate])` fires → `revalidate()`
+  re-reads SQLite → card transitions from loading to updated AlertCard.
+- `endLoad(region)` is called in `.finally()` so the spinner always clears.
+
+**EmptyRegionCard load:**
+- `handleLoad` in feed.tsx: `startLoad(region)` → `fetchAlertForRegion` → `upsertAlert`
+  → `bumpCompletedRefresh()` → Feed re-reads SQLite → `EmptyRegionCard` replaced by
+  `AlertCard`. `EmptyRegionCard` reads `loadingRegions` directly from the store
+  (not via props) and blocks all load buttons while any region is in-flight.
 
 ## Model Routing Logic
 

@@ -9,7 +9,7 @@
  * cache is updated and the screen reflects the new result.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   Text,
@@ -41,12 +41,15 @@ export default function AlertDetailScreen() {
   const { data } = useLocalSearchParams<{ id: string; data: string }>();
   const router = useRouter();
   const days = useSettingsStore((s) => s.days);
-  const { refreshingRegion, startRefresh } = useRefreshStore();
+  const {
+    refreshingRegion, startRefresh,
+    loadingRegions, startLoad, endLoad,
+    bumpCompletedRefresh,
+  } = useRefreshStore();
 
-  const [alert, setAlert] = useState<AlertResponse | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState(false);
+  const [alert, setAlert] = React.useState<AlertResponse | null>(null);
 
+  // Initialise from nav param on mount / param change.
   useEffect(() => {
     if (!data) return;
     try {
@@ -64,20 +67,28 @@ export default function AlertDetailScreen() {
     router.back();
   }
 
-  // For valid alerts: in-place refresh — stays on the detail screen.
-  async function handleRefresh() {
-    if (!alert || refreshing) return;
-    setRefreshing(true);
-    setRefreshError(false);
-    try {
-      const fresh = await fetchAlertForRegion(alert.region, days, true);
-      await upsertAlert(fresh, days);
-      setAlert(fresh);
-    } catch {
-      setRefreshError(true);
-    } finally {
-      setRefreshing(false);
-    }
+  // For valid alerts: add to loadingRegions, fire the fetch in the background,
+  // then navigate back immediately. The Feed card shows a spinner because the
+  // region is in loadingRegions. When the fetch completes, bumpCompletedRefresh
+  // triggers the Feed to revalidate and the spinner clears via endLoad.
+  function handleRefresh() {
+    if (!alert || loadingRegions.has(alert.region)) return;
+    const region = alert.region;
+    const capturedDays = days;
+    startLoad(region);
+    fetchAlertForRegion(region, capturedDays, true)
+      .then(async (fresh) => {
+        await upsertAlert(fresh, fresh.days ?? capturedDays);
+        console.log('[alerts] upsertAlert complete for', region, ', now bumping completedRefresh');
+        bumpCompletedRefresh();
+      })
+      .catch(() => {
+        console.log('[alerts] background refresh failed for', region);
+      })
+      .finally(() => {
+        endLoad(region);
+      });
+    router.back();
   }
 
   if (!alert) {
@@ -161,11 +172,11 @@ export default function AlertDetailScreen() {
         ) : (
           <>
             <Pressable
-              style={[styles.refreshBtn, refreshing && styles.refreshBtnDisabled]}
+              style={[styles.refreshBtn, loadingRegions.has(alert.region) && styles.refreshBtnDisabled]}
               onPress={handleRefresh}
-              disabled={refreshing}
+              disabled={loadingRegions.has(alert.region)}
             >
-              {refreshing ? (
+              {loadingRegions.has(alert.region) ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
                 <Text style={styles.refreshBtnText}>
@@ -173,11 +184,6 @@ export default function AlertDetailScreen() {
                 </Text>
               )}
             </Pressable>
-            {refreshError && (
-              <Text style={styles.refreshError}>
-                Could not reach the server. Try again when connected.
-              </Text>
-            )}
           </>
         )}
       </ScrollView>
@@ -246,10 +252,4 @@ const styles = StyleSheet.create({
   refreshBtnDisabled: { backgroundColor: '#93c5fd' },
   refreshBtnText: { color: '#fff', fontSize: 15, fontWeight: '600' },
 
-  refreshError: {
-    marginTop: 10,
-    fontSize: 13,
-    color: '#ef4444',
-    textAlign: 'center',
-  },
 });

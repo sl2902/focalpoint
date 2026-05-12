@@ -6,17 +6,19 @@ import {
   ActivityIndicator,
   StyleSheet,
 } from 'react-native';
+import { useRefreshStore } from '../store/useRefreshStore';
 
 interface Props {
   region: string;
   days: number;
   onLoad: () => void;
-  loading: boolean;
-  disabled: boolean; // another region is currently loading
 }
 
-export function EmptyRegionCard({ region, days, onLoad, loading, disabled }: Props) {
-  const isBlocked = loading || disabled;
+export function EmptyRegionCard({ region, days, onLoad }: Props) {
+  const loading = useRefreshStore((s) => s.loadingRegions.has(region));
+  const anyLoading = useRefreshStore((s) => s.loadingRegions.size > 0);
+  console.log('[feed] card render, region=', region, 'isLoading=', loading);
+  const isBlocked = anyLoading;
   return (
     <View style={styles.card}>
       <View style={styles.left}>
