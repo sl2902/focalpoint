@@ -46,9 +46,10 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 async def get_alerts_feed(
     request: Request,
     db_path: str = Depends(get_alerts_db_path),
+    days: DaysQuery = 1,
 ) -> list[AlertResponse]:
-    """Return the most recent alert per region, ordered by severity."""
-    return await store.get_latest_per_region(db_path)
+    """Return the most recent alert per region for the given days window, ordered by severity."""
+    return await store.get_latest_per_region(db_path, days=days)
 
 
 @router.get("/watchzone", response_model=AlertResponse)

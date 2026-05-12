@@ -14,6 +14,13 @@
  *
  * Pull-to-refresh always hits the backend — never reads SQLite only.
  *
+ * Background sync:
+ *   A setInterval fires every 5 minutes while the component is mounted and
+ *   connected. Each tick fetches from the backend, writes to SQLite, and
+ *   refreshes the display — no visual spinner (unlike pull-to-refresh).
+ *   The JS thread pauses when the app is backgrounded on iOS, so the interval
+ *   naturally runs only while the app is in the foreground.
+ *
  * Blank-screen prevention:
  *   _alertsCache is a module-level variable that survives component remounts.
  *   useState is initialised from _alertsCache so the feed shows existing data
@@ -51,6 +58,7 @@ interface UseAlertsResult {
 }
 
 const EVICT_THRESHOLD_MS = 24 * 60 * 60 * 1000;   // 24 hours
+const BACKGROUND_SYNC_MS = 5 * 60 * 1000;          // 5 minutes
 
 // Survives component remounts within the same JS runtime session.
 // Initialises useState so the feed never flashes blank on remount.
@@ -130,6 +138,26 @@ export function useAlerts(): UseAlertsResult {
       cancelled = true;
     };
   }, [days, applyAlerts]);
+
+  // Background sync: fetch from backend every 5 minutes while connected.
+  // Does not set refreshing — no spinner for background updates.
+  // Interval is cleared on unmount and reset whenever connectivity or days changes.
+  useEffect(() => {
+    if (!isConnected) return;
+    const id = setInterval(() => {
+      fetchFeed()
+        .then(async (feed) => {
+          await Promise.all(feed.map((a) => upsertAlert(a, days)));
+          const fresh = await getLatestAlertsByDays(days);
+          applyAlerts(fresh);
+          console.log(`[alerts] background sync — ${fresh.length} alerts refreshed`);
+        })
+        .catch(() => {
+          // Network error during background sync — keep current display.
+        });
+    }, BACKGROUND_SYNC_MS);
+    return () => clearInterval(id);
+  }, [isConnected, days, applyAlerts]);
 
   // Re-read SQLite each time the feed screen regains focus.
   // Fires on mount (if focused) and on every back-navigation from Alert Detail.

@@ -21,6 +21,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime
 
 import httpx
 from google import genai
@@ -259,6 +260,38 @@ def _last_json_object(text: str) -> str | None:
     return None
 
 
+# JSON schema passed as Ollama's "format" parameter for structured output.
+# Ollama enforces the schema on message.content — analogous to Gemini's
+# response_schema — so the model cannot emit free text instead of JSON.
+_ALERT_FORMAT_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "severity": {
+            "type": "string",
+            "enum": ["GREEN", "AMBER", "RED", "CRITICAL", "INSUFFICIENT_DATA"],
+        },
+        "summary": {
+            "type": "string",
+            "description": "Safety assessment in max 100 words",
+        },
+        "source_citations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["id", "description"],
+            },
+        },
+        "region": {"type": "string"},
+        "timestamp": {"type": "string"},
+    },
+    "required": ["severity", "summary", "source_citations", "region", "timestamp"],
+}
+
+
 def _extract_json(raw_text: str) -> dict:
     """
     Strip optional markdown fences and parse the remaining text as JSON.
@@ -423,47 +456,43 @@ class GemmaClient:
         self,
         system_content: str,
         user_content: str,
-        num_predict: int = 1024,
-        assistant_prefill: str | None = None,
+        options: dict | None = None,
+        format_schema: dict | None = None,
     ) -> dict:
         """
-        POST to the Ollama /api/chat endpoint and return the full response dict.
+        POST to the Ollama /api/generate endpoint and return the full response dict.
 
-        /api/chat is the correct endpoint for instruction-tuned models — it applies
-        the model's chat template (turn markers, BOS/EOS tokens) which /api/generate
-        bypasses. Using chat format ensures the model generates text output rather
-        than consuming tokens silently via context processing.
+        /api/generate is used instead of /api/chat because the CLI (which works
+        correctly) uses /api/generate internally. /api/chat consistently fails with
+        thinking consuming all num_predict tokens before any JSON is emitted.
 
-        Generated text is at response["message"]["content"] (not response["response"]).
+        The Gemma chat template is applied manually so the model sees the correct
+        turn markers: <start_of_turn>user / <end_of_turn> / <start_of_turn>model.
+        System instructions are prepended to the user turn (Gemma 4 has no dedicated
+        system role in its template).
+
+        Generated text is at response["response"] (not response["message"]["content"]).
+        When format_schema is provided it is sent as the top-level "format" field —
+        Ollama enforces the JSON schema on the generated output, analogous to Gemini's
+        response_schema / response_mime_type.
         Timing fields (total_duration, prompt_eval_count, eval_count, done_reason)
-        remain at the top level, identical to /api/generate.
-
-        assistant_prefill: when set, appended as a final assistant turn so the model
-        continues from that string rather than generating it — useful for forcing
-        JSON output starting with "{" and suppressing any preamble or thinking tokens.
+        are at the top level, identical to /api/chat.
         """
-        url = f"{settings.OLLAMA_BASE_URL}/api/chat"
-        messages: list[dict] = [
-            {"role": "system", "content": system_content},
-            {"role": "user",   "content": user_content},
-        ]
-        if assistant_prefill is not None:
-            messages.append({"role": "assistant", "content": assistant_prefill})
-        payload = {
+        logger.debug("ollama: using /api/generate endpoint")
+        url = f"{settings.OLLAMA_BASE_URL}/api/generate"
+        prompt = (
+            f"<start_of_turn>user\n{system_content}\n\n{user_content}<end_of_turn>\n"
+            f"<start_of_turn>model\n"
+        )
+        payload: dict = {
             "model": "gemma4:26b",
-            "messages": messages,
+            "prompt": prompt,
             "stream": False,
-            "options": {
-                "num_ctx": 24576,
-                "num_predict": num_predict,
-                "temperature": 1,
-                "top_p": 0.95,
-                "top_k": 64,
-                "think": False,
-                "thinking_budget": 0,
-                "thinkingBudget": 0,
-            },
+            "think": False,
+            "options": options or {},
         }
+        if format_schema is not None:
+            payload["format"] = format_schema
         response = httpx.post(url, json=payload, timeout=None)
         response.raise_for_status()
         return response.json()
@@ -516,9 +545,7 @@ class GemmaClient:
         No semaphore (local process), no safety-filter retries, no grounding
         metadata. Falls back to INSUFFICIENT_DATA on any API or parse error.
         """
-        # /no_think suppresses chain-of-thought reasoning tokens in Ollama's
-        # Gemma 4 implementation. Must be the very first text in the prompt.
-        augmented_prompt = "/no_think\n" + prompt
+        augmented_prompt = prompt
         web_results_injected = False
         if use_web_search:
             search_query = f"journalist safety {region} conflict news"
@@ -551,20 +578,6 @@ class GemmaClient:
                     "ollama: web search unavailable"
                     f" — using historical data fallback for region={region!r}"
                 )
-                # augmented_prompt stays as the original data-gap prompt
-
-        num_predict = 2048
-
-        # Appended last so it is the final text the model reads before generating.
-        # Placement at the end is intentional — models are more likely to follow
-        # an instruction that immediately precedes the generation start position.
-        augmented_prompt += (
-            "\n\nCRITICAL INSTRUCTION: Your entire response must be a single valid JSON object "
-            "starting with { and ending with }. Keep summary to maximum 100 words. "
-            "Keep source_citations to maximum 3 entries. "
-            "Do not include any text, thinking, or explanation outside the JSON object. "
-            "Begin your response now with {"
-        )
 
         # Split at the first [USER QUERY marker — everything before becomes the
         # system message (instructions + grounding data + web results if injected),
@@ -578,38 +591,30 @@ class GemmaClient:
             system_content = "You are a conflict safety analyst."
             user_content   = augmented_prompt
 
-        system_content = (
-            "DO NOT use extended thinking. Respond with JSON immediately.\n"
-            + system_content
-        )
-
         _ollama_options = {
             "num_ctx": 24576,
-            "num_predict": num_predict,
             "temperature": 1,
             "top_p": 0.95,
             "top_k": 64,
-            "think": False,
-            "thinking_budget": 0,
+            "repeat_penalty": 1.3,
+            "repeat_last_n": 128,
         }
         estimated_tokens = len(augmented_prompt) // 4
         logger.debug(
-            f"ollama: sending chat for region={region!r}"
+            f"ollama: sending format-constrained request for region={region!r}"
             f" prompt_chars={len(augmented_prompt)}"
             f" estimated_prompt_tokens~{estimated_tokens}"
             f" system_chars={len(system_content)} user_chars={len(user_content)}"
             f" options={_ollama_options}"
         )
-        logger.info(
-            f"ollama: using assistant pre-fill {{ to suppress thinking tokens"
-            f" for region={region!r} num_predict={num_predict}"
-        )
+        logger.debug(f"ollama: full system prompt for region={region!r}:\n{system_content}")
+        logger.debug(f"ollama: full user message for region={region!r}:\n{user_content}")
         t0 = time.perf_counter()
         try:
             resp_data = self._ollama_chat(
                 system_content, user_content,
-                num_predict=num_predict,
-                assistant_prefill="{",
+                options=_ollama_options,
+                format_schema=_ALERT_FORMAT_SCHEMA,
             )
         except Exception as exc:
             logger.warning(
@@ -622,57 +627,6 @@ class GemmaClient:
         logger.debug(
             f"ollama: full response keys and values for region={region!r}:"
             f" { {k: str(v)[:200] for k, v in resp_data.items()} }"
-        )
-
-        # Diagnostic 1: any keys that indicate the model returned thinking metadata.
-        thinking_keys = {
-            k: v for k, v in resp_data.items()
-            if "think" in k.lower() or "thought" in k.lower()
-        }
-        logger.debug(
-            f"ollama: thinking metadata for region={region!r}: {thinking_keys}"
-        )
-
-        raw_text = resp_data.get("message", {}).get("content", "")
-        # Prepend the assistant prefill brace so _extract_json receives a complete
-        # JSON object — the model only generated the body after "{".
-        if raw_text:
-            raw_text = "{" + raw_text
-
-        # Fallback: some Ollama builds put the entire CoT+JSON in message['thinking']
-        # and leave message['content'] empty even when think=False is set.
-        # Walk backwards from the last } to find the last complete JSON object —
-        # a greedy regex across the whole field would span intermediate brace usage
-        # in the CoT prose and produce an unparseable blob.
-        # Prepend "{" here too — with the assistant prefill the thinking field may
-        # contain a JSON body without the opening brace.
-        if not raw_text:
-            thinking = resp_data.get("message", {}).get("thinking", "")
-            if thinking:
-                logger.debug(
-                    f"ollama: content empty, searching thinking field"
-                    f" ({len(thinking)} chars) for JSON for region={region!r}"
-                )
-                candidate = _last_json_object("{" + thinking)
-                if candidate:
-                    raw_text = candidate
-                    logger.info(
-                        f"ollama: extracted JSON from thinking field for region={region!r}"
-                    )
-
-        # Diagnostic 2: delimiter tokens that indicate thinking bled into the
-        # response field despite think=False / thinking_budget=0.
-        _THINK_MARKERS = ("<think>", "</think>", "|think|", "[THINK]")
-        has_think_tokens = any(marker in raw_text for marker in _THINK_MARKERS)
-        logger.debug(
-            f"ollama: has_think_tokens={has_think_tokens} for region={region!r}"
-            + (f" — markers found: {[m for m in _THINK_MARKERS if m in raw_text]}"
-               if has_think_tokens else "")
-        )
-
-        logger.debug(
-            f"ollama: raw response first 500 chars for region={region!r}:"
-            f" {raw_text[:500]!r}"
         )
 
         # Ollama returns nanosecond duration fields — log them alongside wall time
@@ -690,23 +644,49 @@ class GemmaClient:
             f" done_reason={done_reason!r}"
         )
 
-        if done_reason == "length":
-            logger.warning(
-                f"ollama: output truncated at num_predict={num_predict}"
-                f" eval_count={eval_count} for region={region!r}"
-                f" — increase num_predict if JSON is invalid"
-            )
+        raw_text = resp_data.get("response", "")
+        logger.debug(
+            f"ollama: raw response first 500 chars for region={region!r}:"
+            f" {raw_text[:500]!r}"
+        )
 
         if not raw_text:
-            done_reason = resp_data.get("done_reason", "unknown")
-            resp_keys = list(resp_data.keys())
             logger.warning(
                 f"ollama: empty response for region={region!r}"
-                f" done_reason={done_reason!r} resp_keys={resp_keys}"
+                f" done_reason={done_reason!r}"
+                f" resp_keys={list(resp_data.keys())}"
             )
-            return _fallback(region)
+            for retry_n in range(1, 3):
+                logger.warning(
+                    f"ollama: empty response retry {retry_n}/2 for region={region!r}"
+                )
+                time.sleep(1)
+                try:
+                    retry_resp = self._ollama_chat(
+                        system_content, user_content,
+                        options=_ollama_options,
+                        format_schema=_ALERT_FORMAT_SCHEMA,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"ollama: retry {retry_n} API call failed for region={region!r} — {exc}"
+                    )
+                    continue
+                raw_text = retry_resp.get("response", "")
+                if raw_text:
+                    logger.info(
+                        f"ollama: retry {retry_n}/2 succeeded for region={region!r}"
+                    )
+                    break
+            else:
+                logger.warning(
+                    f"ollama: all retries exhausted — falling back for region={region!r}"
+                )
+                return _fallback(region)
 
-        logger.debug(f"ollama: raw response for region={region!r} — {raw_text!r}")
+        raw_text = re.sub(r'^```json\s*|\s*```$', '', raw_text.strip())
+        # URL-encode spaces inside URL strings so JSON parsers don't choke on them.
+        raw_text = re.sub(r'(https?://[^\s"]*) ([^\s"]*)', r'\1%20\2', raw_text)
 
         try:
             raw_dict = _extract_json(raw_text)
@@ -717,7 +697,6 @@ class GemmaClient:
                 logger.info(
                     f"ollama: partial JSON recovery succeeded for region={region!r}"
                     f" severity={raw_dict.get('severity')!r}"
-                    f" citations={len(raw_dict.get('source_citations', []))}"
                 )
             except (json.JSONDecodeError, Exception) as recover_exc:
                 logger.warning(
@@ -726,6 +705,12 @@ class GemmaClient:
                 )
                 return _fallback(region)
 
+        if not raw_dict.get("region"):
+            raw_dict["region"] = region
+        if not raw_dict.get("timestamp"):
+            raw_dict["timestamp"] = datetime.utcnow().isoformat() + "Z"
+
+        logger.debug(f"ollama: parsed dict for region={region!r} — {raw_dict}")
         return validate_output(raw_dict, region)
 
     def _generate_alert_inner(

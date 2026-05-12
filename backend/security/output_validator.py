@@ -50,6 +50,46 @@ _HISTORICAL_SOURCE_RE = re.compile(r"^(CPJ|RSF)(:.+)?$")
 # Example: "FALLBACK:api-error"
 _FALLBACK_RE = re.compile(r"^FALLBACK:[a-z][a-z0-9-]+$")
 
+# Matches thinking-delimiter tokens that leak into citation IDs when the model
+# includes them in its output.  Catches pipe-fenced tokens (<|channel|>,
+# <|im_start|>, <channel|>, <|channel>), and Gemma turn markers
+# (<start_of_turn>, <end_of_turn>).
+_THINKING_DELIM_RE = re.compile(
+    r"<[^>]{0,50}[|][^>]{0,50}>|<(?:start_of_turn|end_of_turn)>"
+)
+
+
+# ---------------------------------------------------------------------------
+# Citation ID sanitisation
+# ---------------------------------------------------------------------------
+
+
+def _sanitise_citation_id(cid: str) -> str | None:
+    """Strip thinking-delimiter tokens from a citation ID.
+
+    If a delimiter is found, tries to extract the URL/ID prefix that precedes
+    it.  Returns the cleaned prefix when it matches a valid citation format,
+    or None when the prefix is unrecognisable (caller should drop the citation).
+    """
+    m = _THINKING_DELIM_RE.search(cid)
+    if m is None:
+        return cid
+    prefix = cid[: m.start()].rstrip()
+    logger.warning(
+        f"output_validator: thinking delimiter in citation id {cid!r}"
+        f" — extracted prefix {prefix!r}"
+    )
+    if not prefix:
+        return None
+    if (
+        _URL_RE.match(prefix)
+        or _GDELT_CLOUD_ID_RE.match(prefix)
+        or _HISTORICAL_SOURCE_RE.match(prefix)
+        or _FALLBACK_RE.match(prefix)
+    ):
+        return prefix
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Layer 1 — Input schemas
@@ -172,6 +212,24 @@ def validate_output(raw: dict, region: str) -> AlertOutput:
             f"output_validator: summary truncated {original_len} → {len(raw['summary'])} chars "
             f"for region={region!r} (repetition loop detected)"
         )
+    # Normalise each citation dict: keep only id + description, sanitise IDs.
+    # Drops unexpected keys (e.g. low_quality_url echoed back by the model) and
+    # removes citations whose IDs contain unrecoverable thinking-delimiter tokens.
+    if isinstance(raw.get("source_citations"), list):
+        cleaned: list[dict] = []
+        for c in raw["source_citations"]:
+            if not isinstance(c, dict):
+                continue
+            cid = _sanitise_citation_id(str(c.get("id", "")))
+            if cid is None:
+                logger.warning(
+                    "output_validator: dropping citation — id contains unrecoverable"
+                    f" thinking delimiter: {c.get('id', '')!r}"
+                )
+                continue
+            cleaned.append({"id": cid, "description": str(c.get("description", ""))})
+        raw = {**raw, "source_citations": cleaned}
+
     logger.debug(f"output_validator: raw dict before validation — {raw!r}")
     try:
         return AlertOutput.model_validate(raw)
