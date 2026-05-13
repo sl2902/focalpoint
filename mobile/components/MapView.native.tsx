@@ -42,37 +42,27 @@ const HOME_CENTER: [number, number] = [
   (BOUNDS_MIN_LAT + BOUNDS_MAX_LAT) / 2,
 ];
 
-// Visual offsets applied only to display coordinates so Gaza / Palestine / Israel
-// don't overlap at the overview zoom level. Gaza stays as the anchor.
+// Visual offsets so Gaza / Palestine / Israel pulse rings don't fully overlap.
+// Gaza stays at exact coordinates; Palestine shifts north; Israel shifts east.
 const DISPLAY_OFFSETS: Record<string, { latOffset: number; lngOffset: number }> = {
-  Palestine: { latOffset: 0.5, lngOffset: 0.0 },
-  Israel:    { latOffset: 0.3, lngOffset: 0.6 },
+  Palestine: { latOffset: 0.3, lngOffset: 0.0 },
+  Israel:    { latOffset: 0.0, lngOffset: 0.2 },
 };
 
-// Each marker is a ViewAnnotation (React Native view) so both Animated-driven
-// CRITICAL pulse rings and static non-CRITICAL circles use the same component.
-// Defined outside the main component so its identity is stable across re-renders.
+// Pure presentational component — animation is managed by the parent and passed
+// in as an already-running Animated.Value so each marker animates independently.
 function MarkerAnnotation({
   marker,
+  anim,
   onPress,
   ViewAnnotation,
 }: {
   marker: ComponentMarker;
+  anim: Animated.Value;
   onPress: (m: ComponentMarker) => void;
   ViewAnnotation: any;
 }) {
-  const anim = useRef(new Animated.Value(0)).current;
   const isCritical = marker.severity === 'CRITICAL';
-
-  useEffect(() => {
-    if (!isCritical) return;
-    const loop = Animated.loop(
-      Animated.timing(anim, { toValue: 1, duration: 1500, useNativeDriver: true }),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [anim, isCritical]);
-
   const scale = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.8] });
   const ringOpacity = anim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] });
 
@@ -105,8 +95,33 @@ function MarkerAnnotation({
 export default function MapViewNative({ markers, onMarkerPress }: Props) {
   const mapRef = useRef<React.ElementRef<typeof MapLibreModule.MapView> | null>(null);
   const cameraRef = useRef<React.ElementRef<typeof MapLibreModule.Camera> | null>(null);
-  // Tracks current zoom from onRegionDidChange so +/- buttons stay accurate.
   const zoomRef = useRef(HOME_ZOOM);
+
+  // Persistent map of region → Animated.Value so each marker has its own
+  // independent animation. Values are created once and never replaced so
+  // interpolations derived from them stay valid across re-renders.
+  const animMap = useRef<Record<string, Animated.Value>>({});
+  markers.forEach((m) => {
+    if (!animMap.current[m.region]) {
+      animMap.current[m.region] = new Animated.Value(0);
+    }
+  });
+
+  // Start a pulse loop for every CRITICAL marker in a single effect.
+  // Stops all loops on cleanup so animations don't leak across severity changes.
+  useEffect(() => {
+    const criticals = markers.filter((m) => m.severity === 'CRITICAL');
+    console.log(`[map] starting pulse for ${criticals.length} CRITICAL markers`);
+    const loops = criticals.map((m) => {
+      const anim = animMap.current[m.region];
+      anim.setValue(0);
+      return Animated.loop(
+        Animated.timing(anim, { toValue: 1, duration: 1500, useNativeDriver: true }),
+      );
+    });
+    loops.forEach((l) => l.start());
+    return () => loops.forEach((l) => l.stop());
+  }, [markers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!_maplibre) {
     return <MapFallback />;
@@ -159,6 +174,7 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
           <MarkerAnnotation
             key={m.id}
             marker={m}
+            anim={animMap.current[m.region]}
             onPress={onMarkerPress}
             ViewAnnotation={ViewAnnotation}
           />
