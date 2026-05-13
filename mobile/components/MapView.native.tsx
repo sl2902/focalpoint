@@ -1,5 +1,5 @@
-import React, { useRef, useCallback, useMemo } from 'react';
-import { TouchableOpacity, View, Text, StyleSheet, LogBox } from 'react-native';
+import React, { useRef, useEffect } from 'react';
+import { TouchableOpacity, View, Text, StyleSheet, LogBox, Animated } from 'react-native';
 
 LogBox.ignoreLogs(['MapLibre Native [ERROR]']);
 // Type-only import — erased at compile time, never triggers TurboModuleRegistry.
@@ -49,15 +49,58 @@ const DISPLAY_OFFSETS: Record<string, { latOffset: number; lngOffset: number }> 
   Israel:    { latOffset: 0.3, lngOffset: 0.6 },
 };
 
-// MapLibre match expression: circle color from severity string property.
-const POINT_COLOR_EXPR: any = [
-  'match', ['get', 'severity'],
-  'CRITICAL', SEVERITY_COLORS.CRITICAL,
-  'RED',      SEVERITY_COLORS.RED,
-  'AMBER',    SEVERITY_COLORS.AMBER,
-  'GREEN',    SEVERITY_COLORS.GREEN,
-  SEVERITY_COLORS.INSUFFICIENT_DATA,
-];
+// Each marker is a ViewAnnotation (React Native view) so both Animated-driven
+// CRITICAL pulse rings and static non-CRITICAL circles use the same component.
+// Defined outside the main component so its identity is stable across re-renders.
+function MarkerAnnotation({
+  marker,
+  onPress,
+  ViewAnnotation,
+}: {
+  marker: ComponentMarker;
+  onPress: (m: ComponentMarker) => void;
+  ViewAnnotation: any;
+}) {
+  const anim = useRef(new Animated.Value(0)).current;
+  const isCritical = marker.severity === 'CRITICAL';
+
+  useEffect(() => {
+    if (!isCritical) return;
+    const loop = Animated.loop(
+      Animated.timing(anim, { toValue: 1, duration: 1500, useNativeDriver: true }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [anim, isCritical]);
+
+  const scale = anim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.8] });
+  const ringOpacity = anim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 0] });
+
+  const offset = DISPLAY_OFFSETS[marker.region];
+  const lngLat: [number, number] = [
+    marker.longitude + (offset?.lngOffset ?? 0),
+    marker.latitude + (offset?.latOffset ?? 0),
+  ];
+  const color = (SEVERITY_COLORS as Record<string, string>)[marker.severity]
+    ?? SEVERITY_COLORS.INSUFFICIENT_DATA;
+
+  return (
+    <ViewAnnotation id={marker.id} lngLat={lngLat} onPress={() => onPress(marker)}>
+      <View style={styles.markerWrapper}>
+        {isCritical && (
+          <Animated.View
+            style={[
+              styles.pulseRing,
+              { backgroundColor: color, transform: [{ scale }], opacity: ringOpacity },
+            ]}
+          />
+        )}
+        <View style={[styles.markerDot, { backgroundColor: color }]} />
+        <Text style={styles.markerLabel}>{marker.region}</Text>
+      </View>
+    </ViewAnnotation>
+  );
+}
 
 export default function MapViewNative({ markers, onMarkerPress }: Props) {
   const mapRef = useRef<React.ElementRef<typeof MapLibreModule.MapView> | null>(null);
@@ -65,58 +108,11 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
   // Tracks current zoom from onRegionDidChange so +/- buttons stay accurate.
   const zoomRef = useRef(HOME_ZOOM);
 
-  // Build GeoJSON with display-offset coordinates. Original lat/lng stored in
-  // properties so the press handler passes accurate data to onMarkerPress.
-  const geoJSON = useMemo(() => ({
-    type: 'FeatureCollection' as const,
-    features: markers.map((m) => {
-      const offset = DISPLAY_OFFSETS[m.region];
-      return {
-        type: 'Feature' as const,
-        id: m.id,
-        geometry: {
-          type: 'Point' as const,
-          coordinates: [
-            m.longitude + (offset?.lngOffset ?? 0),
-            m.latitude  + (offset?.latOffset  ?? 0),
-          ] as [number, number],
-        },
-        properties: {
-          id: m.id,
-          region: m.region,
-          severity: m.severity,
-          timestamp: m.timestamp ?? null,
-          summary: m.summary ?? null,
-          confidence: m.confidence ?? null,
-          originalLatitude: m.latitude,
-          originalLongitude: m.longitude,
-        },
-      };
-    }),
-  }), [markers]);
-
-  const handleSourcePress = useCallback((event: any) => {
-    const features: any[] = event?.nativeEvent?.features ?? [];
-    const feature = features[0];
-    if (!feature) return;
-    const p = feature?.properties ?? {};
-    onMarkerPress({
-      id: p?.id,
-      latitude: p?.originalLatitude,
-      longitude: p?.originalLongitude,
-      severity: p?.severity,
-      region: p?.region,
-      timestamp: p?.timestamp ?? undefined,
-      summary: p?.summary ?? undefined,
-      confidence: p?.confidence ?? undefined,
-    });
-  }, [onMarkerPress]);
-
   if (!_maplibre) {
     return <MapFallback />;
   }
 
-  const { Map, Camera, GeoJSONSource, Layer } = _maplibre;
+  const { Map, Camera, ViewAnnotation } = _maplibre as any;
 
   const handleZoomIn = () => {
     const next = Math.min(zoomRef.current + 1, MAX_ZOOM);
@@ -159,42 +155,14 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
           animationMode="flyTo"
         />
 
-        <GeoJSONSource
-          id="markers"
-          data={geoJSON}
-          onPress={handleSourcePress}
-        >
-          {/* Severity-colored circle for each watch zone */}
-          <Layer
-            id="marker-circle"
-            type="circle"
-            paint={{
-              'circle-radius': 10,
-              'circle-color': POINT_COLOR_EXPR,
-              'circle-stroke-width': 2,
-              'circle-stroke-color': '#fff',
-            }}
+        {markers.map((m) => (
+          <MarkerAnnotation
+            key={m.id}
+            marker={m}
+            onPress={onMarkerPress}
+            ViewAnnotation={ViewAnnotation}
           />
-          {/* Region name label below each circle — white text, dark halo */}
-          <Layer
-            id="marker-label"
-            type="symbol"
-            layout={{
-              'text-field': '{region}',
-              'text-size': 12,
-              'text-anchor': 'top',
-              'text-offset': [0, 1.4] as any,
-              'text-allow-overlap': true,
-              'text-ignore-placement': true,
-              'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'] as any,
-            }}
-            paint={{
-              'text-color': '#ffffff',
-              'text-halo-color': 'rgba(0,0,0,0.85)',
-              'text-halo-width': 2,
-            }}
-          />
-        </GeoJSONSource>
+        ))}
       </Map>
 
       {/* Zoom + home controls — top-right vertical stack */}
@@ -216,6 +184,32 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
+
+  markerWrapper: {
+    alignItems: 'center',
+  },
+  pulseRing: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+  },
+  markerDot: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  markerLabel: {
+    marginTop: 3,
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#fff',
+    textShadowColor: 'rgba(0,0,0,0.85)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 3,
+  },
 
   controlStack: {
     position: 'absolute',

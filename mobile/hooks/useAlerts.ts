@@ -45,7 +45,23 @@ import { useConnectivity } from './useConnectivity';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { useRefreshStore } from '../store/useRefreshStore';
 import type { DaysOption } from '../store/useSettingsStore';
-import type { AlertResponse } from '../types/api';
+import type { AlertResponse, Severity } from '../types/api';
+
+const SEVERITY_RANK: Record<Severity, number> = {
+  CRITICAL: 4,
+  RED: 3,
+  AMBER: 2,
+  GREEN: 1,
+  INSUFFICIENT_DATA: 0,
+};
+
+function sortAlerts(alerts: AlertResponse[]): AlertResponse[] {
+  return [...alerts].sort((a, b) => {
+    const severityDiff = (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0);
+    if (severityDiff !== 0) return severityDiff;
+    return a.region.localeCompare(b.region);
+  });
+}
 
 interface UseAlertsResult {
   alerts: AlertResponse[];
@@ -79,8 +95,9 @@ export function useAlerts(): UseAlertsResult {
 
   // Single write point: keeps the module cache in sync with component state.
   const applyAlerts = useCallback((cached: AlertResponse[]) => {
-    _alertsCache = cached;
-    setAlerts(cached);
+    const sorted = sortAlerts(cached);
+    _alertsCache = sorted;
+    setAlerts(sorted);
   }, []);
 
   // Cold-start stale-while-revalidate: show SQLite immediately, always fetch backend in parallel.

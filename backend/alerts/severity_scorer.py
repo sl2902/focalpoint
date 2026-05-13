@@ -25,6 +25,7 @@ from datetime import date
 from enum import Enum
 from typing import Final
 
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from backend.ingestion.cpj_connector import CountryStats
@@ -278,6 +279,7 @@ def score_severity(
     rsf_press_freedom: float,
     reference_date: date | None = None,
     gdelt_aggregate_tone: float = 0.0,
+    region: str = "",
 ) -> SeverityResult:
     """
     Compute a severity level from multi-source conflict intelligence inputs.
@@ -341,6 +343,12 @@ def score_severity(
             f" | composite={historical_total:.1f} → {level.value}"
             f" (confidence={hist_conf:.2f})"
         )
+        logger.debug(
+            f"scorer: {region} — fatalities=0.0/30 event_type=0.0/25 gdelt_tone=0.0/20"
+            f" cpj_rate={cpj_component:.1f}/15 rsf_baseline={rsf_component:.1f}/10"
+            f" composite={historical_total:.1f} → {level.value} (confidence={hist_conf:.2f})"
+            f" [historical-only]"
+        )
         return SeverityResult(
             level=level,
             score=round(historical_total, 2),
@@ -387,6 +395,15 @@ def score_severity(
     )
     if floor_applied:
         reasoning += f" | {floor_reason}"
+
+    logger.debug(
+        f"scorer: {region} — fatalities={components['fatalities']:.1f}/30"
+        f" event_type={components['event_type']:.1f}/25"
+        f" gdelt_tone={components['gdelt_tone']:.1f}/20"
+        f" cpj_rate={components['cpj_rate']:.1f}/15"
+        f" rsf_baseline={components['rsf_baseline']:.1f}/10"
+        f" composite={total:.1f} → {level.value} (confidence={confidence:.2f})"
+    )
 
     return SeverityResult(
         level=level,

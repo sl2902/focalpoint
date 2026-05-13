@@ -56,7 +56,7 @@ async def refresh_all_watch_zones(app) -> None:  # noqa: ANN001
             events = await gdelt_cloud.fetch_events(
                 gdelt_cloud_country, days=1, has_fatalities=has_fatalities
             )
-            gdelt_resp = await gdelt.fetch_articles(f"conflict {region}", maxrecords=10)
+            gdelt_resp = await gdelt.fetch_articles_for_region(region, maxrecords=10)
             cpj_stats = cpj.get_country_stats(region)
             rsf_key = RSF_ALIASES.get(region, region)
             rsf_score = RSF_SCORES.get(rsf_key, 0.0)
@@ -67,6 +67,7 @@ async def refresh_all_watch_zones(app) -> None:  # noqa: ANN001
                 cpj_stats=cpj_stats,
                 rsf_press_freedom=rsf_score,
                 gdelt_aggregate_tone=gdelt_resp.aggregate_tone,
+                region=region,
             )
             alert = generator.generate(
                 conflict_events=events,

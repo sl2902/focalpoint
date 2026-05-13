@@ -108,6 +108,7 @@ def _mock_gdelt_cloud_empty():
 def _mock_gdelt():
     connector = MagicMock()
     connector.fetch_articles = AsyncMock(return_value=_GDELT_RESPONSE)
+    connector.fetch_articles_for_region = AsyncMock(return_value=_GDELT_RESPONSE)
     return connector
 
 
@@ -222,7 +223,7 @@ class TestGetRegionAlerts:
     def test_gdelt_fetch_articles_timespan_matches_days(
         self, tmp_db_path: str, days: int, expected_timespan: str
     ) -> None:
-        """fetch_articles timespan must match the days param — 24H for days=1, {n}D otherwise."""
+        """fetch_articles_for_region timespan must match the days param — 24H for days=1, {n}D otherwise."""
         mock_gdelt = _mock_gdelt()
         app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
@@ -232,8 +233,8 @@ class TestGetRegionAlerts:
         with TestClient(app) as c:
             c.get(f"/alerts/Gaza?days={days}")
         app.dependency_overrides.clear()
-        mock_gdelt.fetch_articles.assert_called_once()
-        _, kwargs = mock_gdelt.fetch_articles.call_args
+        mock_gdelt.fetch_articles_for_region.assert_called_once()
+        _, kwargs = mock_gdelt.fetch_articles_for_region.call_args
         assert kwargs.get("timespan") == expected_timespan
 
     def test_different_days_cached_independently(self, client: TestClient) -> None:
@@ -270,6 +271,9 @@ class TestGetRegionAlerts:
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud_empty
         empty_gdelt = MagicMock()
         empty_gdelt.fetch_articles = AsyncMock(
+            return_value=GdeltResponse(articles=[], aggregate_tone=0.0)
+        )
+        empty_gdelt.fetch_articles_for_region = AsyncMock(
             return_value=GdeltResponse(articles=[], aggregate_tone=0.0)
         )
         app.dependency_overrides[get_gdelt_connector] = lambda: empty_gdelt
@@ -318,6 +322,9 @@ class TestGetRegionAlerts:
         # Articles present → short-circuit applies when scorer says INSUFFICIENT_DATA
         articles_gdelt = MagicMock()
         articles_gdelt.fetch_articles = AsyncMock(
+            return_value=GdeltResponse(articles=[_ARTICLE], aggregate_tone=0.0)
+        )
+        articles_gdelt.fetch_articles_for_region = AsyncMock(
             return_value=GdeltResponse(articles=[_ARTICLE], aggregate_tone=0.0)
         )
         app.dependency_overrides[get_gdelt_connector] = lambda: articles_gdelt
@@ -455,22 +462,22 @@ class TestPostQuery:
             "GREEN", "AMBER", "RED", "CRITICAL", "INSUFFICIENT_DATA"
         }
 
-    def test_fetch_articles_called_with_conflict_region_term(self, tmp_db_path: str) -> None:
-        """gdelt.fetch_articles must receive 'conflict {region}', not the journalist's question."""
+    def test_fetch_articles_called_with_region_not_journalist_query(self, tmp_db_path: str) -> None:
+        """fetch_articles_for_region must receive the region name, not the journalist's question."""
         mock_gdelt = _mock_gdelt()
         app.dependency_overrides[get_gdelt_cloud_connector] = _mock_gdelt_cloud
         app.dependency_overrides[get_gdelt_connector] = lambda: mock_gdelt
         app.dependency_overrides[get_cpj_connector] = _mock_cpj
         app.dependency_overrides[get_alert_generator] = _mock_generator
         app.dependency_overrides[get_alerts_db_path] = lambda: tmp_db_path
-        app.dependency_overrides[get_redis] = lambda: None  # disable cache so fetch_articles is always called
+        app.dependency_overrides[get_redis] = lambda: None  # disable cache so fetch_articles_for_region is always called
         with TestClient(app) as c:
             c.post("/query", data=self._VALID_BODY)
         app.dependency_overrides.clear()
 
-        mock_gdelt.fetch_articles.assert_called_once()
-        call_arg = mock_gdelt.fetch_articles.call_args.args[0]
-        assert call_arg == "conflict Gaza"
+        mock_gdelt.fetch_articles_for_region.assert_called_once()
+        call_arg = mock_gdelt.fetch_articles_for_region.call_args.args[0]
+        assert call_arg == "Gaza"
         assert call_arg != self._VALID_BODY["text"]
 
     def test_audio_only_returns_200(self, tmp_db_path: str) -> None:
@@ -710,6 +717,9 @@ class TestPostQueryCache:
         """When GDELT returns no articles (use_web_search=True), Redis write is skipped."""
         empty_gdelt = MagicMock()
         empty_gdelt.fetch_articles = AsyncMock(
+            return_value=GdeltResponse(articles=[], aggregate_tone=0.0)
+        )
+        empty_gdelt.fetch_articles_for_region = AsyncMock(
             return_value=GdeltResponse(articles=[], aggregate_tone=0.0)
         )
         mock_redis = AsyncMock()

@@ -137,7 +137,7 @@ async def _build_alert(
         gdelt_cloud_country, days=days, has_fatalities=has_fatalities
     )
     timespan = "24H" if days == 1 else f"{days}D"
-    gdelt_resp = await gdelt.fetch_articles(f"conflict {region}", timespan=timespan, maxrecords=10)
+    gdelt_resp = await gdelt.fetch_articles_for_region(region, timespan=timespan, maxrecords=10)
     cpj_stats = cpj.get_country_stats(region)
     rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
@@ -148,6 +148,7 @@ async def _build_alert(
         cpj_stats=cpj_stats,
         rsf_press_freedom=rsf_score,
         gdelt_aggregate_tone=gdelt_resp.aggregate_tone,
+        region=region,
     )
     logger.info(f"alerts: score breakdown for {region!r} — {severity_result.reasoning}")
 

@@ -39,6 +39,15 @@ Files:
 - rsf_connector.py
 - acled_connector_disabled.py # preserved — reactivate if API access granted
 
+`GdeltConnector.fetch_articles_for_region(region, ...)` rotates through three
+journalist-focused query variants — `["journalist {region}", "media {region}",
+"press {region}"]` — returning the first response that contains articles. If all
+three return empty (including 429-induced empties), returns the last empty response
+so the caller falls through to web search as normal. Each variant has its own Redis
+cache key so a cached empty for one term does not block the others. The legacy
+`fetch_articles(query, ...)` method is unchanged and still used directly for
+`POST /query`-path GDELT lookups.
+
 Each connector:
 1. Fetches from API with cursor pagination
 2. Validates response with Pydantic
@@ -196,6 +205,11 @@ Scoring components (0–100 composite, capped):
 
 Thresholds: GREEN 0–24 | AMBER 25–49 | RED 50–74 | CRITICAL 75+
 
+After every call a DEBUG log is emitted:
+`scorer: {region} — fatalities=X/30 event_type=X/25 gdelt_tone=X/20 cpj_rate=X/15 rsf_baseline=X/10 composite=X → LEVEL (confidence=X)`
+The historical-only path appends `[historical-only]`. Pass `region=` at call sites
+to populate this field (defaults to `""` if omitted, for backwards compatibility).
+
 Historical fallback: when GDELT Cloud returns 0 events and GDELT Doc API
 returns 0 articles, score from CPJ + RSF alone (max 25 → AMBER ceiling).
 SeverityResult.historical_only is set to True.
@@ -290,18 +304,20 @@ Shows one marker per watch zone (all 9 regions), coloured by severity.
   "View Full Assessment →" button that posts a message to the parent frame,
   triggering navigation to AlertDetail.
 - **Native** (`MapView.native.tsx`): MapLibre React Native + OpenStreetMap demo
-  tiles. Uses a single `GeoJSONSource` (no clustering) with two `Layer`s:
-  a `circle` layer for coloured dots and a `symbol` layer for region name labels
-  (`text-field: '{region}'`, anchored above the dot). Marker tap is handled via
-  `GeoJSONSource.onPress` — `event.features[0].properties` carries the region and
-  severity. Geographically overlapping watch zones (Gaza/Palestine/Israel) are
-  offset via `DISPLAY_OFFSETS` applied at GeoJSON feature-creation time.
-  Camera is driven by a `cameraState` object (`centerCoordinate`, `zoomLevel`);
-  the `Camera` component's `key` prop is set from these values so MapLibre applies
-  the new position when state changes (controlled-prop remount pattern — `zoomTo`
-  and `jumpTo` are not available on the Camera ref in MapLibre RN 11.x).
-  Home button calls `cameraRef.current.fitBounds(bounds, padding, padding, duration)`
-  to frame all 9 watch zones. Zoom +/− and home controls overlaid top-right.
+  tiles. All 9 markers rendered as `ViewAnnotation` (React Native views) — no
+  `GeoJSONSource` or GL layers. Each `MarkerAnnotation` component contains the
+  coloured dot and region name label as a `Text` view below it.
+  CRITICAL markers additionally render a pulsing ring: a single `Animated.Value(0)`
+  loops 0→1 with `Animated.loop` + `Animated.timing` (1500ms); scale is interpolated
+  1→1.8 and opacity 0.6→0. The ring is an absolute-positioned `Animated.View`
+  rendered before the solid dot so it sits behind it in paint order.
+  Non-CRITICAL markers use a static dot only.
+  Tap is handled via `ViewAnnotation.onPress` on each annotation.
+  Geographically overlapping watch zones (Gaza/Palestine/Israel) are offset via
+  `DISPLAY_OFFSETS` applied to the `lngLat` prop at render time.
+  Camera controlled via `cameraRef` — `zoomTo` for +/− buttons, `fitBounds` for
+  the home button to frame all 9 watch zones. Zoom +/− and home controls overlaid
+  top-right.
 - Severity legend overlaid bottom-right (Safe / Elevated / Active / Critical / No data).
 
 **AlertDetail** (`app/alert/[id].tsx`)
@@ -386,6 +402,11 @@ SQLite (`services/cache.ts`):
 - `revalidate()` re-reads SQLite and calls `applyAlerts`. It is triggered by
   `completedRefreshVersion` (not called directly from `handleLoad`) — this avoids
   a stale-closure bug where a direct call would capture an outdated `days` value.
+
+**Feed sort order:** `applyAlerts` sorts every update before writing to state —
+severity descending (CRITICAL=4, RED=3, AMBER=2, GREEN=1, INSUFFICIENT_DATA=0),
+then region name alphabetically as a stable tiebreaker. Timestamp is excluded from
+the sort so refreshes don't reorder the feed.
 
 **Alert Detail refresh (fire-and-forget):**
 - `handleRefresh` calls `startLoad(region)`, fires the fetch without awaiting it,

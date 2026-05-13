@@ -129,9 +129,8 @@ async def query(
 
     # Cache miss — fetch live data.
     # GDELT Doc API search is always region-scoped, not journalist-question-scoped.
-    gdelt_search_term = f"conflict {region}"
     events = await gdelt_cloud.fetch_events(region)
-    gdelt_resp = await gdelt.fetch_articles(gdelt_search_term)
+    gdelt_resp = await gdelt.fetch_articles_for_region(region)
     cpj_stats = cpj.get_country_stats(region)
     rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
@@ -152,6 +151,7 @@ async def query(
         cpj_stats=cpj_stats,
         rsf_press_freedom=rsf_score,
         gdelt_aggregate_tone=gdelt_resp.aggregate_tone,
+        region=region,
     )
     logger.debug(
         f"query: scorer result for {region!r} — {severity_result.level.value}"

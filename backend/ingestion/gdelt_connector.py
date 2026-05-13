@@ -28,6 +28,11 @@ from pydantic import BaseModel
 GDELT_BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_CACHE_TTL = 900  # seconds — matches GDELT 15-minute update cadence
 
+# Query variants tried in order — journalist-focused terms surface press-safety
+# articles more reliably than "conflict {region}". If the first variant returns
+# 0 articles (empty or 429), the next is tried before falling back to web search.
+_JOURNALIST_QUERY_VARIANTS = ["journalist {}", "media {}", "press {}"]
+
 # Prevents simultaneous GDELT Doc API requests from hammering the no-auth endpoint.
 _GDELT_SEM = asyncio.Semaphore(1)
 
@@ -225,3 +230,35 @@ class GdeltConnector:
                 logger.warning(f"Redis write failed: {exc}")
 
         return response
+
+    async def fetch_articles_for_region(
+        self,
+        region: str,
+        timespan: str = "24H",
+        maxrecords: int = 20,
+        country: str | None = None,
+    ) -> GdeltResponse:
+        """
+        Fetch journalist-safety articles for *region* using rotating query variants.
+
+        Tries each variant in _JOURNALIST_QUERY_VARIANTS ("journalist {region}",
+        "media {region}", "press {region}") and returns the first response that
+        contains articles. If all variants return empty (including 429-induced empty
+        responses), returns the last empty GdeltResponse so the caller can fall
+        through to web search as normal.
+
+        Each variant has its own Redis cache key, so a cached empty result for one
+        term does not prevent the next from being attempted.
+        """
+        last: GdeltResponse = GdeltResponse()
+        for template in _JOURNALIST_QUERY_VARIANTS:
+            query = template.format(region)
+            result = await self.fetch_articles(
+                query, timespan=timespan, maxrecords=maxrecords, country=country
+            )
+            if result.articles:
+                return result
+            logger.info(f"gdelt: query={query!r} returned 0 articles — trying next variant")
+            last = result
+        logger.info(f"gdelt: all query variants exhausted for region={region!r} — returning empty")
+        return last

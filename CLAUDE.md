@@ -105,15 +105,18 @@ docs/
 - Do not bundle multiple unrelated changes in one commit
 - Run pytest after every backend change before moving on
 
-## Current Status (May 12, 2026)
+## Current Status (May 14, 2026)
 
 ### Backend — Complete (551 tests)
 - GDELT Cloud + Doc, CPJ, RSF connectors
-- Severity scoring with historical floor and max severity rule
+- Severity scoring with historical floor and max severity rule; DEBUG log per region
+  showing all component scores and composite after every score_severity call
 - Gemma 4 26B via Google AI Studio API for alerts
 - Local Gemma 4 E4B via Transformers for audio transcription (MPS on Apple Silicon)
 - Background scheduler, SQLite cache, FastAPI routes
 - Web search fallback via Gemma 4 when GDELT Doc fails
+- GDELT Doc query: fetch_articles_for_region() rotates ["journalist {}", "media {}",
+  "press {}"] — returns first variant with articles, falls back to web search if all empty
 - Ollama path: POST /api/generate, manual Gemma chat template, think:false at top-level
   payload, format=_ALERT_FORMAT_SCHEMA for structured output, temperature=1/top_p=0.95/
   top_k=64/repeat_penalty=1.3/repeat_last_n=128, no num_predict, _recover_truncated_json
@@ -124,11 +127,13 @@ docs/
 
 ### Mobile — In Progress
 - Feed screen — working, shows all 9 watch zones; stale-while-revalidate cold start (always
-  fetches backend), 24h eviction, 5-minute background sync interval
+  fetches backend), 24h eviction, 5-minute background sync interval; alerts sorted by
+  severity desc (CRITICAL→GREEN→INSUFFICIENT_DATA) then region alphabetically
 - Alert Detail — working, back button, refresh
-- Map screen — individual markers per watch zone (no clustering), region name labels,
-  +/- zoom and home button working; DISPLAY_OFFSETS for Gaza/Palestine/Israel overlap
-- Settings screen — working, scroll fixed
+- Map screen — all markers as ViewAnnotation; CRITICAL markers pulse (Animated.Value 0→1,
+  scale 1→1.8, opacity 0.6→0, 1500ms loop); non-CRITICAL static; region labels rendered
+  inside each annotation; DISPLAY_OFFSETS for Gaza/Palestine/Israel overlap
+- Settings screen — working, scroll fixed; default days=1 (matches scheduler write cadence)
 - Query screen — voice transcription working (E4B local), text query working
 - Voice UX — mic meter pending, audio chip UX fix pending
 
