@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { TouchableOpacity, View, Text, StyleSheet, LogBox, Animated } from 'react-native';
 
 LogBox.ignoreLogs(['MapLibre Native [ERROR]']);
@@ -9,7 +9,7 @@ import { WATCH_ZONE_COORDS } from '../constants/watchZones';
 import { MapFallback } from './MapFallback';
 import type { ComponentMarker } from '../types/map';
 
-const TILE_STYLE = 'https://demotiles.maplibre.org/style.json';
+const TILE_STYLE_URL = 'https://demotiles.maplibre.org/style.json';
 
 // require() instead of static import so the TurboModuleRegistry throw is caught
 // here rather than crashing the module factory and leaving default=undefined for
@@ -107,6 +107,35 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
     }
   });
 
+  const [tileStyle, setTileStyle] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    fetch(TILE_STYLE_URL)
+      .then((r) => r.json())
+      .then((style) => {
+        const modified = style.layers.map((layer: any) => {
+          if (
+            layer.type === 'symbol' &&
+            (layer.id.includes('label') || layer.id.includes('name'))
+          ) {
+            return {
+              ...layer,
+              paint: {
+                ...layer.paint,
+                'text-color': '#0a0a0a',
+                'text-halo-color': 'rgba(255,255,255,0.95)',
+                'text-halo-width': 2.5,
+                'text-halo-blur': 1,
+              },
+            };
+          }
+          return layer;
+        });
+        setTileStyle({ ...style, layers: modified });
+      })
+      .catch(() => { /* keep URL fallback on network error */ });
+  }, []);
+
   // Start a pulse loop for every CRITICAL marker in a single effect.
   // Stops all loops on cleanup so animations don't leak across severity changes.
   useEffect(() => {
@@ -153,10 +182,10 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
 
   return (
     <View style={styles.container}>
-      <Map
+      {tileStyle && <Map
         ref={mapRef}
         style={styles.map}
-        mapStyle={TILE_STYLE}
+        mapStyle={tileStyle}
         onRegionDidChange={(feature: any) => {
           const z = feature?.properties?.zoomLevel;
           if (typeof z === 'number') zoomRef.current = z;
@@ -179,7 +208,7 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
             ViewAnnotation={ViewAnnotation}
           />
         ))}
-      </Map>
+      </Map>}
 
       {/* Zoom + home controls — top-right vertical stack */}
       <View style={styles.controlStack}>
