@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     # API key for https://ollama.com/api/web_search — create at ollama.com/settings/keys
     OLLAMA_API_KEY: str = ""
 
+    # GDELT Doc API cache TTL in seconds.
+    # Default 86400 (24 h) — safe because empty/429 results are never cached.
+    # Reduce to 900 (15 min) if API constraints are lifted and fresher articles
+    # are needed for scheduler-generated alerts.
+    GDELT_DOC_CACHE_TTL: int = 86400
+
     # Background alert scheduler
     WATCH_ZONES: list[str] = [
         "Palestine", "Gaza", "Israel", "Iran", "Ukraine", "Sudan", "Myanmar", "Yemen", "Syria"

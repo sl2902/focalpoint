@@ -31,20 +31,41 @@ Copy `.env.example` to `.env` and fill in:
 
 ## Running Locally
 
-### Backend
+### Backend (required for both options)
 
 1. `docker run -d -p 6379:6379 redis`
 2. `brew services start ollama`
 3. `ollama pull gemma4:26b`
 4. `uv run uvicorn backend.api.main:app --reload`
 
-### Mobile
+---
 
-1. `cd mobile`
+## Option 1 — Backend + Swagger UI (Quickest)
+
+No mobile setup needed. Once the backend is running, open the interactive API docs at:
+
+**http://localhost:8000/docs**
+
+Covers all endpoints: alerts feed, per-region assessments, natural language query, and audio transcription.
+
+---
+
+## Option 2 — Full Mobile App (Complete Experience)
+
+Full React Native iOS app with MapLibre map, voice queries, and real-time alert feed. Requires Xcode, CocoaPods, and Node 20.
+
+1. `brew install cocoapods`
 2. `nvm use 20`
-3. `npx expo start`
+3. `cd mobile && npm install`
+4. `npx expo prebuild --platform ios`
+5. `cd ios && pod install && cd ..`
+6. `npx expo start`
 
 > **Physical device**: set `EXPO_PUBLIC_API_BASE_URL=http://<your-mac-local-ip>:8000` in the root `.env` so the app can reach the backend over your local network.
+
+> **Note:** MapLibre native map requires a proper native build. Running via Expo Go will show a fallback web map instead.
+
+---
 
 ### Seeding Data
 
@@ -70,7 +91,7 @@ automated test suite and require real API credentials in `.env`.
 
 | Script | What it does |
 |--------|--------------|
-| `smoke_test.py` | Fetches 5 live ACLED events for Palestine and 5 GDELT articles for "conflict Gaza", runs the severity scorer on the combined results, and prints a human-readable breakdown including severity level, score, confidence, and per-component scores. |
+| `smoke_test.py` | Fetches live GDELT Cloud conflict events for Palestine and GDELT Doc articles for "journalist Gaza", runs the severity scorer on the combined results, and prints a human-readable breakdown including severity level, score, confidence, and per-component scores. |
 
 ### Running the smoke test
 
@@ -78,6 +99,4 @@ automated test suite and require real API credentials in `.env`.
 uv run python backend/scripts/smoke_test.py
 ```
 
-Requires `ACLED_USERNAME` and `ACLED_PASSWORD` in `.env` (register at
-[acleddata.com](https://acleddata.com)). GDELT, CPJ, and RSF require no
-credentials and will run regardless.
+Requires `GDELT_CLOUD_API_KEY` in `.env`. GDELT Doc API, CPJ, and RSF require no credentials and will run regardless.

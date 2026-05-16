@@ -25,8 +25,10 @@ import redis.asyncio as aioredis
 from loguru import logger
 from pydantic import BaseModel
 
+from backend.config import settings
+
 GDELT_BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
-GDELT_CACHE_TTL = 900  # seconds — matches GDELT's 15-minute update cadence
+GDELT_CACHE_TTL = settings.GDELT_DOC_CACHE_TTL
 
 # Query variants tried in order — journalist-focused terms surface press-safety
 # articles more reliably than "conflict {region}". If the first variant returns
@@ -132,6 +134,10 @@ class GdeltConnector:
                     )
             except Exception as exc:
                 logger.warning(f"Redis read failed, calling API directly: {exc}")
+        else:
+            logger.warning(f"gdelt: no Redis client — cache bypassed for query='{query}'")
+
+        logger.debug(f"gdelt: cache miss for query='{query}' timespan='{timespan}' — hitting API")
 
         artlist_params: dict[str, Any] = {
             "query": query,
