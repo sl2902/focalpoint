@@ -57,14 +57,15 @@ Covers all endpoints: alerts feed, per-region assessments, natural language quer
 
 Full React Native iOS app with MapLibre map, voice queries, and real-time alert feed. Requires Xcode, CocoaPods, and Node 20.
 
-1. `brew install cocoapods`
-2. `nvm use 20`
-3. `cd mobile && npm install`
-4. `npx expo prebuild --platform ios`
-5. `cd ios && pod install && cd ..`
-6. `npx expo start`
+1. `cp mobile/.env.example mobile/.env` — then edit `mobile/.env` if targeting a physical device (see comment inside)
+2. `brew install cocoapods`
+3. `nvm use 20`
+4. `cd mobile && npm install`
+5. `npx expo prebuild --platform ios`
+6. `cd ios && pod install && cd ..`
+7. `npx expo start`
 
-> **Physical device**: set `EXPO_PUBLIC_API_BASE_URL=http://<your-mac-local-ip>:8000` in the root `.env` so the app can reach the backend over your local network.
+> **Physical device**: change `EXPO_PUBLIC_API_BASE_URL` in `mobile/.env` to your Mac's local IP (e.g. `http://192.168.x.x:8000`) so the app can reach the backend over your local network.
 
 > **Note:** MapLibre native map requires a proper native build. Running via Expo Go will show a fallback web map instead.
 
