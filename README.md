@@ -36,6 +36,9 @@ Copy `.env.example` to `.env` and fill in:
 1. `docker run -d -p 6379:6379 redis`
 2. `brew services start ollama`
 3. `ollama pull gemma4:26b`
+   > **Warning:** downloads ~17 GB of model weights. Allow 10–30 minutes on first run depending on connection speed. The model is cached locally after the first download.
+   >
+   > **Skip this step** if using Google AI Studio instead — set `OLLAMA_ENABLED=False` in `.env` and the backend routes all inference through the API. No local model required.
 4. `uv run uvicorn backend.api.main:app --reload`
 
 ---
@@ -100,3 +103,9 @@ uv run python backend/scripts/smoke_test.py
 ```
 
 Requires `GDELT_CLOUD_API_KEY` in `.env`. GDELT Doc API, CPJ, and RSF require no credentials and will run regardless.
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
