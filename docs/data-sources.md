@@ -168,14 +168,16 @@ one object.
 - timespan — e.g. 24H, 7D
 - country — FIPS 2-letter country code
 
-**Example query (recent conflict coverage for a region):**
+**Example query (recent journalist-safety coverage for a region):**
 ```
-?query=conflict+Gaza&mode=artlist&maxrecords=10
+?query=journalist+Gaza&mode=artlist&maxrecords=10
 &timespan=24H&format=json
 ```
 
-Note: the search term is always `"conflict {region}"` — the journalist's question
-text is passed to Gemma 4 as context only and never used as a GDELT search term.
+Note: `fetch_articles_for_region` rotates three query variants —
+`"journalist {region}"`, `"media {region}"`, `"press {region}"` — returning
+the first that yields articles. The journalist's question text is passed to
+Gemma 4 as context only and never used as a GDELT search term.
 
 **Pagination:**
 GDELT Doc API does not support cursor pagination natively.
@@ -197,8 +199,10 @@ FocalPoint uses maxrecords=10 for on-device, maxrecords=20 for backend.
 
 **Pydantic model:** backend/ingestion/gdelt_connector.py → GdeltArticle
 
-**Redis key pattern:** gdelt:{query_hash}:{timespan}
-**TTL:** 900 seconds (15 minutes — matches GDELT update frequency)
+**Redis key pattern:** `gdelt:articles:{query}:{timespan}`
+**TTL:** 900 s default (scheduler path) / 86400 s for `/query` calls —
+controlled by the `cache_ttl` parameter on `fetch_articles`. Empty results
+(0 articles) are never written to Redis regardless of TTL.
 
 ---
 

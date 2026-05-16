@@ -30,11 +30,13 @@ from loguru import logger
 
 from backend.api.dependencies import (
     get_alert_generator,
+    get_alerts_db_path,
     get_cpj_connector,
     get_gdelt_cloud_connector,
     get_gdelt_connector,
     get_redis,
 )
+from backend.scheduler import store
 from backend.api.schemas import QueryResponse, TranscribeResponse
 from backend.config import settings
 from backend.data.rsf_scores import RSF_ALIASES, RSF_SCORES
@@ -86,6 +88,7 @@ async def query(
     cpj: CPJConnector = Depends(get_cpj_connector),
     generator: AlertGenerator = Depends(get_alert_generator),
     redis: Annotated[aioredis.Redis | None, Depends(get_redis)] = None,
+    db_path: str = Depends(get_alerts_db_path),
 ) -> QueryResponse:
     """Accept a journalist's query (text, audio, or both) and return a grounded assessment."""
     if not text and not audio:
@@ -130,10 +133,24 @@ async def query(
     # Cache miss — fetch live data.
     # GDELT Doc API search is always region-scoped, not journalist-question-scoped.
     events = await gdelt_cloud.fetch_events(region)
-    gdelt_resp = await gdelt.fetch_articles_for_region(region)
+    gdelt_resp = await gdelt.fetch_articles_for_region(region, cache_ttl=86400)
     cpj_stats = cpj.get_country_stats(region)
     rsf_key = RSF_ALIASES.get(region, region)
     rsf_score = RSF_SCORES.get(rsf_key, 0.0)
+
+    cached_alert = await store.get_cached_alert(db_path, region, days=1)
+    is_fallback_alert = cached_alert is not None and any(
+        c.id.startswith("FALLBACK:") for c in cached_alert.source_citations
+    )
+    previous_assessment = (
+        cached_alert.summary
+        if cached_alert is not None and not is_fallback_alert
+        else None
+    )
+    logger.debug(
+        f"query: previous_assessment for {region!r} — "
+        + ("injected into prompt" if previous_assessment else "none (cache miss or fallback)")
+    )
 
     use_web_search = len(gdelt_resp.articles) == 0
     # Ollama path: cap articles at 3 to keep the prompt under ~1500 tokens.
@@ -167,6 +184,7 @@ async def query(
         region=region,
         journalist_query=journalist_query,
         severity_result=severity_result,
+        previous_assessment=previous_assessment,
     )
 
     response = QueryResponse(

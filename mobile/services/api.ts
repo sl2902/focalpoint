@@ -10,7 +10,7 @@
 
 import { getItem, setItem } from './storage';
 
-const BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:8000';
+const BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
 const DEVICE_ID_KEY = 'focalpoint_device_id';
 const LANGUAGE_KEY  = 'focalpoint_language';

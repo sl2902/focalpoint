@@ -20,7 +20,6 @@ import pytest
 
 from backend.ingestion.gdelt_connector import (
     GDELT_BASE_URL,
-    GDELT_CACHE_TTL,
     GdeltArticle,
     GdeltConnector,
     GdeltResponse,
@@ -28,7 +27,6 @@ from backend.ingestion.gdelt_connector import (
     _MAX_RETRIES,
     _RETRY_DELAY_S,
     _parse_aggregate_tone,
-    _query_hash,
 )
 
 # ---------------------------------------------------------------------------
@@ -208,28 +206,6 @@ class TestGdeltResponse:
 
 
 # ---------------------------------------------------------------------------
-# Query hash
-# ---------------------------------------------------------------------------
-
-
-class TestQueryHash:
-    def test_same_inputs_produce_same_hash(self) -> None:
-        assert _query_hash("conflict Gaza", "PS") == _query_hash("conflict Gaza", "PS")
-
-    def test_different_query_produces_different_hash(self) -> None:
-        assert _query_hash("conflict Gaza", None) != _query_hash("journalist Sudan", None)
-
-    def test_different_country_produces_different_hash(self) -> None:
-        assert _query_hash("war", "PS") != _query_hash("war", "UA")
-
-    def test_none_country_differs_from_explicit_country(self) -> None:
-        assert _query_hash("war", None) != _query_hash("war", "PS")
-
-    def test_hash_length_is_twelve(self) -> None:
-        assert len(_query_hash("anything", None)) == 12
-
-
-# ---------------------------------------------------------------------------
 # Cache miss — full API flow
 # ---------------------------------------------------------------------------
 
@@ -371,7 +347,7 @@ class TestCacheMiss:
     ) -> None:
         query = "conflict Gaza"
         timespan = "24H"
-        expected_key = f"gdelt:{_query_hash(query, None)}:{timespan}"
+        expected_key = f"gdelt:articles:{query}:{timespan}"
 
         with patch(
             "backend.ingestion.gdelt_connector.httpx.AsyncClient",
@@ -387,22 +363,21 @@ class TestCacheMiss:
         assert loaded["articles"] == [GdeltArticle(**SAMPLE_ARTICLE).model_dump()]
         assert loaded["aggregate_tone"] == pytest.approx(_EXPECTED_TONE)
 
-    async def test_cache_key_includes_country_in_hash(
+    async def test_cache_key_format(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
     ) -> None:
         query = "war"
-        country = "PS"
         timespan = "24H"
-        expected_key = f"gdelt:{_query_hash(query, country)}:{timespan}"
+        expected_key = f"gdelt:articles:{query}:{timespan}"
 
         with patch(
             "backend.ingestion.gdelt_connector.httpx.AsyncClient",
             return_value=mock_http_client,
         ):
             connector = GdeltConnector(redis_client=mock_redis)
-            await connector.fetch_articles(query, country=country)
+            await connector.fetch_articles(query, country="PS")
 
         written_key = mock_redis.set.call_args.args[0]
         assert written_key == expected_key
@@ -565,7 +540,7 @@ class TestEmptyResponse:
 
         assert result.articles == []
 
-    async def test_empty_response_still_cached(
+    async def test_empty_response_not_cached(
         self,
         mock_redis: AsyncMock,
         mock_http_client: AsyncMock,
@@ -589,11 +564,7 @@ class TestEmptyResponse:
             connector = GdeltConnector(redis_client=mock_redis)
             await connector.fetch_articles("no results query")
 
-        mock_redis.set.assert_called_once()
-        written_payload = mock_redis.set.call_args.args[1]
-        loaded = json.loads(written_payload)
-        assert loaded["articles"] == []
-        assert isinstance(loaded["aggregate_tone"], float)
+        mock_redis.set.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

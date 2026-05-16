@@ -3,10 +3,11 @@ GDELT 2.0 Doc API ingestion connector.
 
 Fetches news articles via the GDELT Doc API (mode=artlist) and aggregate
 sentiment via a second call (mode=timelinetone). No authentication required.
-Results are cached in Redis for 900 s to match GDELT's 15-minute update cadence.
+Default cache TTL is 900 s (matches GDELT's 15-minute update cadence) so the
+scheduler always gets fresh articles. Callers that tolerate stale data (e.g.
+the /query route) may pass a longer cache_ttl to reduce API pressure.
 
-Redis key pattern : gdelt:{query_hash}:{timespan}  TTL: 900 s
-query_hash        : MD5 of "{query}:{country}" — stable across calls
+Redis key pattern : gdelt:articles:{query}:{timespan}  TTL: caller-controlled
 
 The artlist API does not return per-article tone scores; tone is only available
 via the timelinetone endpoint. Both calls are made together and the aggregate
@@ -16,7 +17,6 @@ tone (mean of non-zero 15-minute-window values) is stored in GdeltResponse.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from typing import Any
 
@@ -26,7 +26,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 GDELT_BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
-GDELT_CACHE_TTL = 900  # seconds — matches GDELT 15-minute update cadence
+GDELT_CACHE_TTL = 900  # seconds — matches GDELT's 15-minute update cadence
 
 # Query variants tried in order — journalist-focused terms surface press-safety
 # articles more reliably than "conflict {region}". If the first variant returns
@@ -43,12 +43,6 @@ _REQUEST_TIMEOUT = httpx.Timeout(15.0)  # per-attempt timeout
 # Tone thresholds (see docs/data-sources.md)
 TONE_HOSTILE = -5.0      # below this: hostile/dangerous media environment
 TONE_POSITIVE = 0.0      # above this: unusually positive (rare in conflict zones)
-
-
-def _query_hash(query: str, country: str | None) -> str:
-    """Return a stable 12-char hex hash of the query + country combination."""
-    raw = f"{query}:{country or ''}"
-    return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
 def _parse_aggregate_tone(data: dict) -> float:
@@ -107,6 +101,7 @@ class GdeltConnector:
         timespan: str = "24H",
         maxrecords: int = 20,
         country: str | None = None,
+        cache_ttl: int = GDELT_CACHE_TTL,
     ) -> GdeltResponse:
         """
         Return GDELT articles and aggregate tone for *query*.
@@ -120,15 +115,16 @@ class GdeltConnector:
             timespan:   Lookback window — e.g. "24H", "7D" (default "24H").
             maxrecords: Max articles to return — max 250 (default 20).
             country:    Optional FIPS 2-letter country code to filter by.
+            cache_ttl:  Redis TTL in seconds (default 900). Pass a longer value
+                        (e.g. 86400) for callers that tolerate stale articles.
         """
-        qhash = _query_hash(query, country)
-        cache_key = f"gdelt:{qhash}:{timespan}"
+        cache_key = f"gdelt:articles:{query}:{timespan}"
 
         if self._redis:
             try:
                 cached = await self._redis.get(cache_key)
                 if cached:
-                    logger.debug(f"Cache hit: {cache_key}")
+                    logger.debug(f"gdelt: cache hit for query='{query}' timespan='{timespan}'")
                     data = json.loads(cached)
                     return GdeltResponse(
                         articles=[GdeltArticle(**a) for a in data["articles"]],
@@ -219,13 +215,14 @@ class GdeltConnector:
 
         response = GdeltResponse(articles=articles, aggregate_tone=aggregate_tone)
 
-        if self._redis:
+        if self._redis and articles:
             try:
                 payload = json.dumps({
                     "articles": [a.model_dump() for a in articles],
                     "aggregate_tone": aggregate_tone,
                 })
-                await self._redis.set(cache_key, payload, ex=GDELT_CACHE_TTL)
+                await self._redis.set(cache_key, payload, ex=cache_ttl)
+                logger.debug(f"gdelt: cached articles for query='{query}' timespan='{timespan}' TTL={cache_ttl}s key='gdelt:articles:{query}:{timespan}'")
             except Exception as exc:
                 logger.warning(f"Redis write failed: {exc}")
 
@@ -237,6 +234,7 @@ class GdeltConnector:
         timespan: str = "24H",
         maxrecords: int = 20,
         country: str | None = None,
+        cache_ttl: int = GDELT_CACHE_TTL,
     ) -> GdeltResponse:
         """
         Fetch journalist-safety articles for *region* using rotating query variants.
@@ -254,7 +252,7 @@ class GdeltConnector:
         for template in _JOURNALIST_QUERY_VARIANTS:
             query = template.format(region)
             result = await self.fetch_articles(
-                query, timespan=timespan, maxrecords=maxrecords, country=country
+                query, timespan=timespan, maxrecords=maxrecords, country=country, cache_ttl=cache_ttl
             )
             if result.articles:
                 return result

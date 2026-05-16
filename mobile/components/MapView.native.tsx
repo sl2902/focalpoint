@@ -42,7 +42,7 @@ const HOME_CENTER: [number, number] = [
   (BOUNDS_MIN_LAT + BOUNDS_MAX_LAT) / 2,
 ];
 
-// Visual offsets so Gaza / Palestine / Israel pulse rings don't fully overlap.
+// Per-region adjustments on top of WATCH_ZONE_COORDS to separate overlapping markers.
 // Gaza stays at exact coordinates; Palestine shifts north; Israel shifts east.
 const DISPLAY_OFFSETS: Record<string, { latOffset: number; lngOffset: number }> = {
   Palestine: { latOffset: 0.3, lngOffset: 0.0 },
@@ -86,7 +86,6 @@ function MarkerAnnotation({
           />
         )}
         <View style={[styles.markerDot, { backgroundColor: color }]} />
-        <Text style={styles.markerLabel}>{marker.region}</Text>
       </View>
     </ViewAnnotation>
   );
@@ -113,27 +112,11 @@ export default function MapViewNative({ markers, onMarkerPress }: Props) {
     fetch(TILE_STYLE_URL)
       .then((r) => r.json())
       .then((style) => {
-        const modified = style.layers.map((layer: any) => {
-          if (
-            layer.type === 'symbol' &&
-            (layer.id.includes('label') || layer.id.includes('name'))
-          ) {
-            return {
-              ...layer,
-              paint: {
-                ...layer.paint,
-                'text-color': '#0a0a0a',
-                'text-halo-color': 'rgba(255,255,255,0.95)',
-                'text-halo-width': 2.5,
-                'text-halo-blur': 1,
-              },
-            };
-          }
-          return layer;
-        });
-        setTileStyle({ ...style, layers: modified });
+        const labelLayer = style.layers.find((l: any) => l.id === 'countries-label');
+        if (labelLayer) { delete labelLayer.minzoom; }
+        setTileStyle({ ...style });
       })
-      .catch(() => { /* keep URL fallback on network error */ });
+      .catch(() => setTileStyle(TILE_STYLE_URL as any));
   }, []);
 
   // Start a pulse loop for every CRITICAL marker in a single effect.
@@ -246,16 +229,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#fff',
   },
-  markerLabel: {
-    marginTop: 3,
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#fff',
-    textShadowColor: 'rgba(0,0,0,0.85)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 3,
-  },
-
   controlStack: {
     position: 'absolute',
     top: 12,

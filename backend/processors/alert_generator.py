@@ -114,6 +114,7 @@ class AlertGenerator:
         severity_result: SeverityResult | None = None,
         audio_bytes: bytes | None = None,
         audio_mime_type: str | None = None,
+        previous_assessment: str | None = None,
     ) -> AlertOutput:
         """
         Generate a validated alert for *region* from multi-source inputs.
@@ -175,6 +176,7 @@ class AlertGenerator:
             use_web_search=prompt_use_web_search,
             audio_provided=audio_provided,
             ollama_mode=settings.OLLAMA_ENABLED,
+            previous_assessment=previous_assessment,
         )
 
         alert = self._gemma.generate_alert(

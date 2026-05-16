@@ -22,7 +22,7 @@ All TTLs are aligned to the natural update frequency of each source.
 | Source           | Redis Key Pattern | TTL | Rationale |
 |------------------|-----------------|-----|-----------|
 | GDELT Cloud      | gdelt_cloud:{query_hash}:{timespan} | 28800s | Free tier is 100 queries/month — 8h TTL keeps usage within quota |
-| GDELT Doc API    | gdelt:{query_hash}:{timespan} | 900s | Matches GDELT 15min update cadence; artlist + timelinetone cached together |
+| GDELT Doc API    | gdelt:articles:{query}:{timespan} | 900s (scheduler) / 86400s (/query) | Scheduler needs fresh articles each run; /query callers tolerate stale data. Empty results (0 articles) are never cached — a transient 429 or dry spell must not poison the cache for subsequent callers |
 
 Note: CPJ data is loaded from a local static CSV at startup and
 held in memory. No Redis caching needed for CPJ.
@@ -38,7 +38,9 @@ Return cached data immediately. No API call made.
 
 **Implementation:**
 Use redis-py async client. All cache reads/writes are async.
-Cache key collisions prevented by including all query parameters in key hash.
+GDELT Doc cache TTL is caller-controlled via the `cache_ttl` parameter on
+`fetch_articles` / `fetch_articles_for_region` (default 900s). The `/query`
+route passes `cache_ttl=86400`; the scheduler uses the default.
 
 ---
 
@@ -98,18 +100,18 @@ time window so the 1d feed and 7d feed are independent cache namespaces.
   `deleteAlertsOlderThan` so stale data cannot accumulate across app restarts
 
 **Staleness check:**
-On cold start `getNewestFetchedAt(days)` returns `MAX(fetched_at)` for the
-current time window. If the newest row is older than 8 hours, `useAlerts`
-fetches all watch zones from the backend and overwrites SQLite. Otherwise it
-serves SQLite directly. Pull-to-refresh always bypasses this check and hits
-the backend.
+None on cold start — `useAlerts` always fetches from the backend unconditionally
+(stale-while-revalidate). SQLite is read and displayed immediately in parallel so
+the feed is never blank while the request is in flight. `getNewestFetchedAt(days)`
+is used for the cache timestamp label only, not as a staleness gate.
+Pull-to-refresh always hits the backend.
 
 **Sync behaviour:**
 On cold start (connectivity available):
 1. Evict rows older than 24 h
-2. Check `MAX(fetched_at)` age against 8 h stale threshold
-3. If stale → `fetchFeed()` from backend, `upsertAlert` each result
-4. If fresh → read from SQLite directly (no network call)
+2. Read SQLite immediately and display whatever is cached (may be empty)
+3. Fetch backend in parallel — always, no staleness gate
+4. Write fresh data to SQLite; update display when backend responds
 5. Pull-to-refresh always calls `fetchFeed()` regardless of age
 
 ---
