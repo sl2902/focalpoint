@@ -60,6 +60,59 @@ _THINKING_DELIM_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# CPJ / RSF citation ID → real URL mapping
+# ---------------------------------------------------------------------------
+
+_CPJ_REGIONS: dict[str, str] = {
+    "palestine": "mideast",
+    "gaza": "mideast",
+    "israel": "mideast",
+    "iran": "mideast",
+    "ukraine": "europe",
+    "sudan": "africa",
+    "myanmar": "asia",
+    "yemen": "mideast",
+    "syria": "mideast",
+}
+
+# RSF uses non-obvious slugs for some territories.
+_RSF_SLUGS: dict[str, str] = {
+    "palestine": "west-bank-and-gaza",
+    "gaza": "west-bank-and-gaza",
+    "west bank and gaza": "west-bank-and-gaza",
+}
+
+
+def _resolve_citation_url(cid: str) -> str:
+    """Convert a CPJ or RSF citation ID to a real URL.
+
+    CPJ:Syria-2024  → https://cpj.org/mideast/syria/
+    RSF:Ukraine     → https://rsf.org/en/country/ukraine
+    Bare CPJ / RSF  → base index pages
+    Unrecognised country → base index page (never raises)
+    Non-CPJ/RSF IDs are returned unchanged.
+    """
+    if cid.startswith("CPJ"):
+        detail = cid[3:].lstrip(":").strip()
+        country = re.sub(r"[-\s]\d{4}$", "", detail).lower().strip()
+        region = _CPJ_REGIONS.get(country)
+        if region and country:
+            slug = country.replace(" ", "-")
+            return f"https://cpj.org/{region}/{slug}/"
+        return "https://cpj.org/data/"
+
+    if cid.startswith("RSF"):
+        detail = cid[3:].lstrip(":").strip()
+        if detail and not detail.lower().startswith("press freedom"):
+            country = re.sub(r"[-\s]\d{4}$", "", detail).lower().strip()
+            slug = _RSF_SLUGS.get(country, country.replace(" ", "-"))
+            return f"https://rsf.org/en/country/{slug}"
+        return "https://rsf.org/en/index"
+
+    return cid
+
+
+# ---------------------------------------------------------------------------
 # Citation ID sanitisation
 # ---------------------------------------------------------------------------
 
@@ -227,6 +280,7 @@ def validate_output(raw: dict, region: str) -> AlertOutput:
                     f" thinking delimiter: {c.get('id', '')!r}"
                 )
                 continue
+            cid = _resolve_citation_url(cid)
             cleaned.append({"id": cid, "description": str(c.get("description", ""))})
         raw = {**raw, "source_citations": cleaned}
 

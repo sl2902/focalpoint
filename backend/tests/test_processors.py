@@ -240,7 +240,7 @@ class TestBuildPrompt:
     # ------------------------------------------------------------------
 
     def _prompt_no_events(self, **kwargs):
-        return self._prompt(conflict_events=[], **kwargs)
+        return self._prompt(conflict_events=[], gdelt_articles=[], **kwargs)
 
     def test_no_events_includes_data_availability_note(self):
         prompt = self._prompt_no_events()
@@ -263,6 +263,11 @@ class TestBuildPrompt:
 
     def test_with_events_omits_data_availability_note(self):
         prompt = self._prompt(conflict_events=[_GDELT_EVENT])
+        assert "[DATA AVAILABILITY NOTE]" not in prompt
+
+    def test_no_events_with_gdelt_articles_omits_note(self):
+        """GDELT Doc articles present → note suppressed even with no GDELT Cloud events."""
+        prompt = self._prompt(conflict_events=[], gdelt_articles=[_GDELT_ARTICLE])
         assert "[DATA AVAILABILITY NOTE]" not in prompt
 
     def test_data_availability_note_appears_before_retrieved_data(self):
@@ -294,6 +299,18 @@ class TestBuildPrompt:
         ws_pos = prompt.index("[MANDATORY WEB SEARCH")
         data_pos = prompt.index("[RETRIEVED DATA]")
         assert ws_pos < data_pos
+
+    def test_no_gdelt_with_web_search_shows_web_search_note(self):
+        """Both GDELT sources empty + web search active → DATA AVAILABILITY NOTE redirects to web results."""
+        prompt = self._prompt(conflict_events=[], gdelt_articles=[], use_web_search=True)
+        assert "[DATA AVAILABILITY NOTE]" in prompt
+        assert "web search results above" in prompt
+        assert "primary live intelligence source" in prompt
+
+    def test_no_gdelt_with_web_search_does_not_say_no_live_events(self):
+        """Web search note must not tell Gemma to lead with 'no live conflict events were found'."""
+        prompt = self._prompt(conflict_events=[], gdelt_articles=[], use_web_search=True)
+        assert "GDELT Cloud returned 0 live conflict events" not in prompt
 
 
 # ---------------------------------------------------------------------------

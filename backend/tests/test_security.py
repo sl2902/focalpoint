@@ -294,3 +294,49 @@ class TestValidateOutput:
     def test_fallback_region_matches_input_region(self) -> None:
         result = validate_output({}, region="Kabul")
         assert result.region == "Kabul"
+
+    # ------------------------------------------------------------------
+    # CPJ / RSF citation ID → URL resolution through validate_output
+    # ------------------------------------------------------------------
+
+    def _alert_with_citation(self, cid: str) -> dict:
+        raw = _valid_alert()
+        raw["source_citations"] = [{"id": cid, "description": "Historical journalist safety data"}]
+        return raw
+
+    def test_cpj_namespaced_resolves_to_url(self) -> None:
+        result = validate_output(self._alert_with_citation("CPJ:Syria-2024"), region="Syria")
+        assert result.source_citations[0].id == "https://cpj.org/mideast/syria/"
+
+    def test_cpj_bare_resolves_to_index(self) -> None:
+        result = validate_output(self._alert_with_citation("CPJ"), region="Syria")
+        assert result.source_citations[0].id == "https://cpj.org/data/"
+
+    def test_cpj_ukraine_resolves_to_europe_region(self) -> None:
+        result = validate_output(self._alert_with_citation("CPJ:Ukraine-2024"), region="Ukraine")
+        assert result.source_citations[0].id == "https://cpj.org/europe/ukraine/"
+
+    def test_cpj_gaza_resolves_to_mideast(self) -> None:
+        result = validate_output(self._alert_with_citation("CPJ:Gaza"), region="Gaza")
+        assert result.source_citations[0].id == "https://cpj.org/mideast/gaza/"
+
+    def test_rsf_namespaced_resolves_to_url(self) -> None:
+        result = validate_output(self._alert_with_citation("RSF:Ukraine"), region="Ukraine")
+        assert result.source_citations[0].id == "https://rsf.org/en/country/ukraine"
+
+    def test_rsf_bare_resolves_to_index(self) -> None:
+        result = validate_output(self._alert_with_citation("RSF"), region="Syria")
+        assert result.source_citations[0].id == "https://rsf.org/en/index"
+
+    def test_rsf_press_freedom_index_resolves_to_index(self) -> None:
+        result = validate_output(self._alert_with_citation("RSF:Press Freedom Index 2025"), region="Syria")
+        assert result.source_citations[0].id == "https://rsf.org/en/index"
+
+    def test_rsf_gaza_resolves_to_west_bank_slug(self) -> None:
+        result = validate_output(self._alert_with_citation("RSF:Gaza"), region="Gaza")
+        assert result.source_citations[0].id == "https://rsf.org/en/country/west-bank-and-gaza"
+
+    def test_https_url_citation_unchanged(self) -> None:
+        url = "https://reuters.com/world/some-article"
+        result = validate_output(self._alert_with_citation(url), region="Gaza")
+        assert result.source_citations[0].id == url

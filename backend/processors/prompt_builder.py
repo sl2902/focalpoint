@@ -161,13 +161,21 @@ def build_prompt(
     ) if use_web_search else ""
 
     no_live_events = len(conflict_events) == 0
-    # When web search is active the model is fetching live data — suppress the
-    # historical-only note so it does not anchor the model to CPJ/RSF.
-    # When a previous assessment exists, replace the "no live events" note with a
-    # softer prompt that directs Gemma to use the cached context rather than
-    # leading with an absence-of-data disclaimer.
-    if no_live_events and not use_web_search:
-        if previous_assessment:
+    no_gdelt_articles = len(gdelt_articles) == 0
+    # Show DATA AVAILABILITY NOTE only when BOTH GDELT Cloud AND GDELT Doc are
+    # empty — if either source has data Gemma has enough to reason from and
+    # leading with a disclaimer produces worse responses.
+    if no_live_events and no_gdelt_articles:
+        if use_web_search:
+            data_gap_block = (
+                "\n"
+                "[DATA AVAILABILITY NOTE]\n"
+                "No live GDELT events or articles were found. The web search results above\n"
+                "are your primary live intelligence source — lead your summary with findings\n"
+                "from those results, not with 'no live conflict events were found'.\n"
+                "[END DATA AVAILABILITY NOTE]\n"
+            )
+        elif previous_assessment:
             data_gap_block = (
                 "\n"
                 "[DATA AVAILABILITY NOTE]\n"
