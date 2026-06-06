@@ -30,7 +30,11 @@ CPJ_ALIASES: dict[str, str] = {
     "Gaza": "Israel and the Occupied Palestinian Territory",
     "Gaza Strip": "Israel and the Occupied Palestinian Territory",
     "West Bank": "Israel and the Occupied Palestinian Territory",
-    "Israel": "Israel and the Occupied Palestinian Territory",
+    # "Israel" is intentionally absent: all 239 CPJ incidents under
+    # "Israel and the Occupied Palestinian Territory" are overwhelmingly
+    # from Gaza (214 of 239 are post-Oct 2023). Mapping "Israel" here
+    # would give Israel proper a CPJ rate of 9.19/yr — a 15/15 score —
+    # driven entirely by Gaza deaths. Israel proper returns 0 incidents.
 }
 
 # Maps raw CSV headers → snake_case field names used in CpjIncident.

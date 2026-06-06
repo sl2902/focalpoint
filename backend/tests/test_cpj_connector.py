@@ -312,24 +312,24 @@ class TestCpjAliases:
         incidents = real_palestine_connector.get_incidents("Germany")
         assert incidents == []
 
-    def test_israel_alias_defined(self) -> None:
-        """Israel has no separate CPJ country string — it shares the same
-        entry as Palestine: 'Israel and the Occupied Palestinian Territory'."""
-        assert "Israel" in CPJ_ALIASES
-        assert CPJ_ALIASES["Israel"] == _CPJ_REAL_COUNTRY
+    def test_israel_not_aliased(self) -> None:
+        """Israel proper is intentionally absent from CPJ_ALIASES.
+        All 239 OPT incidents are overwhelmingly Gaza-driven (214 post-Oct 2023);
+        aliasing 'Israel' would give it a false 9.19/yr CPJ rate."""
+        assert "Israel" not in CPJ_ALIASES
 
-    def test_get_incidents_via_israel_alias(
+    def test_get_incidents_israel_returns_empty(
         self, real_palestine_connector: CPJConnector
     ) -> None:
         incidents = real_palestine_connector.get_incidents("Israel")
-        assert len(incidents) == 2
+        assert incidents == []
 
-    def test_get_country_stats_via_israel_alias(
+    def test_get_country_stats_israel_returns_zero(
         self, real_palestine_connector: CPJConnector
     ) -> None:
         stats = real_palestine_connector.get_country_stats("Israel")
-        assert stats.total_incidents == 2
-        assert stats.incidents_per_year > 0.0
+        assert stats.total_incidents == 0
+        assert stats.incidents_per_year == 0.0
 
 
 # ---------------------------------------------------------------------------
