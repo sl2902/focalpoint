@@ -277,6 +277,40 @@ class TestBuildPrompt:
         assert note_pos < data_pos
 
     # ------------------------------------------------------------------
+    # CPJ/RSF fallback instruction
+    # ------------------------------------------------------------------
+
+    def test_cpj_rsf_fallback_present_when_cpj_data_exists(self):
+        prompt = self._prompt()
+        assert "Do not return INSUFFICIENT_DATA if CPJ or RSF data is available" in prompt
+
+    def test_cpj_rsf_fallback_names_region(self):
+        prompt = self._prompt(region="northern Gaza")
+        assert "not relevant to journalist safety in northern Gaza" in prompt
+
+    def test_cpj_rsf_fallback_absent_when_no_cpj_or_rsf(self):
+        no_data_stats = CountryStats(
+            country="Nowhere",
+            total_incidents=0,
+            incidents_per_year=0.0,
+            earliest_year=0,
+            latest_year=0,
+        )
+        prompt = self._prompt(cpj_stats=no_data_stats, rsf_score=0.0)
+        assert "Do not return INSUFFICIENT_DATA if CPJ or RSF data is available" not in prompt
+
+    def test_cpj_rsf_fallback_present_when_only_rsf_score(self):
+        no_cpj = CountryStats(
+            country="Nowhere",
+            total_incidents=0,
+            incidents_per_year=0.0,
+            earliest_year=0,
+            latest_year=0,
+        )
+        prompt = self._prompt(cpj_stats=no_cpj, rsf_score=45.0)
+        assert "Do not return INSUFFICIENT_DATA if CPJ or RSF data is available" in prompt
+
+    # ------------------------------------------------------------------
     # Web search instruction block
     # ------------------------------------------------------------------
 

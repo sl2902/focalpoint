@@ -202,6 +202,12 @@ def build_prompt(
     else:
         data_gap_block = ""
 
+    cpj_rsf_fallback = (
+        f"If the GDELT articles are not relevant to journalist safety in {region}, "
+        f"ignore them and assess based on CPJ and RSF data only. "
+        f"Do not return INSUFFICIENT_DATA if CPJ or RSF data is available.\n"
+    ) if (cpj_stats.total_incidents > 0 or rsf_score > 0) else ""
+
     system_grounding = (
         "You are a conflict safety analyst. You have been given a web search tool.\n"
         "Use it to find live news, then assess journalist safety from what you find.\n"
@@ -226,6 +232,7 @@ def build_prompt(
         "  - source_citations: include 2-5 entries only. Do not list every article.\n"
         "  - Do not repeat any phrase or sentence.\n"
         "If insufficient data exists, respond with \"INSUFFICIENT_DATA\".\n"
+        f"{cpj_rsf_fallback}"
         "Always cite your source with a human-readable description.\n"
         "For GDELT Cloud events use format: \"<event_type> — <location>, <date> (<fatalities> fatalities)\".\n"
         "For news articles use the article title as the description.\n"
