@@ -607,8 +607,8 @@ class GemmaClient:
             f" system_chars={len(system_content)} user_chars={len(user_content)}"
             f" options={_ollama_options}"
         )
-        logger.debug(f"ollama: full system prompt for region={region!r}:\n{system_content}")
-        logger.debug(f"ollama: full user message for region={region!r}:\n{user_content}")
+        # logger.debug(f"ollama: full system prompt for region={region!r}:\n{system_content}")
+        # logger.debug(f"ollama: full user message for region={region!r}:\n{user_content}")
         t0 = time.perf_counter()
         try:
             resp_data = self._ollama_chat(
