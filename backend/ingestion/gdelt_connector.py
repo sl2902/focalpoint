@@ -33,7 +33,7 @@ GDELT_CACHE_TTL = settings.GDELT_DOC_CACHE_TTL
 # Query variants tried in order — specific phrases filter out sports/entertainment
 # noise while surfacing press-safety articles. If the first variant returns
 # 0 articles (empty or 429), the next is tried before falling back to web search.
-_JOURNALIST_QUERY_VARIANTS = ["journalist safety {}", "press freedom {}", "media censorship {}"]
+_JOURNALIST_QUERY_VARIANTS = ["journalist killed {}", "press freedom {} 2026", "media {} war"]
 
 # Prevents simultaneous GDELT Doc API requests from hammering the no-auth endpoint.
 _GDELT_SEM = asyncio.Semaphore(1)
@@ -245,8 +245,8 @@ class GdeltConnector:
         """
         Fetch journalist-safety articles for *region* using rotating query variants.
 
-        Tries each variant in _JOURNALIST_QUERY_VARIANTS ("journalist safety {region}",
-        "press freedom {region}", "media censorship {region}") and returns the first response that
+        Tries each variant in _JOURNALIST_QUERY_VARIANTS ("journalist killed {region}",
+        "press freedom {region} 2026", "media {region} war") and returns the first response that
         contains articles. If all variants return empty (including 429-induced empty
         responses), returns the last empty GdeltResponse so the caller can fall
         through to web search as normal.
