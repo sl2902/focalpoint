@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
@@ -68,6 +69,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info(f"Alert store initialised at {app.state.db_path!r}")
 
     if settings.SCHEDULER_ENABLED:
+        most_recent = await store.get_most_recent_created_at(app.state.db_path)
+        stale = most_recent is None or (
+            datetime.now(timezone.utc) - most_recent
+        ).total_seconds() > 86400
+
+        job_kwargs: dict = {}
+        if stale:
+            job_kwargs["next_run_time"] = datetime.now(timezone.utc)
+
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
             jobs.refresh_all_watch_zones,
@@ -76,10 +86,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             args=[app],
             id="refresh_watch_zones",
             replace_existing=True,
+            **job_kwargs,
         )
         scheduler.start()
         app.state.scheduler = scheduler
-        logger.info("Alert scheduler started (8h interval)")
+        if stale:
+            logger.info("Alert scheduler started (8h interval) — cache stale or empty, running immediately")
+        else:
+            logger.info("Alert scheduler started (8h interval)")
 
     yield
 

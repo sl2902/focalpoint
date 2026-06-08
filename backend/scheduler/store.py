@@ -142,6 +142,16 @@ async def get_cached_alert(
     return _row_to_alert_response(row)
 
 
+async def get_most_recent_created_at(db_path: str) -> datetime | None:
+    """Return the most recent created_at across all alerts, or None if the table is empty."""
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute("SELECT MAX(created_at) FROM alerts") as cursor:
+            row = await cursor.fetchone()
+    if row is None or row[0] is None:
+        return None
+    return datetime.fromisoformat(row[0])
+
+
 async def get_latest_per_region(db_path: str, days: int = 1) -> list[AlertResponse]:
     """Return the newest alert per region for the given days window, ordered by severity."""
     async with aiosqlite.connect(db_path) as db:

@@ -220,6 +220,49 @@ class TestGetLatestPerRegion:
 
 
 # ---------------------------------------------------------------------------
+# TestGetMostRecentCreatedAt
+# ---------------------------------------------------------------------------
+
+
+class TestGetMostRecentCreatedAt:
+    async def test_returns_none_on_empty_db(self, db_path: str) -> None:
+        result = await store.get_most_recent_created_at(db_path)
+        assert result is None
+
+    async def test_returns_datetime_when_rows_exist(self, db_path: str) -> None:
+        await _insert(db_path, region="Gaza")
+        result = await store.get_most_recent_created_at(db_path)
+        assert result is not None
+        assert isinstance(result, datetime)
+
+    async def test_returns_most_recent_across_regions(self, db_path: str) -> None:
+        old_ts = (datetime.now(tz=timezone.utc) - timedelta(hours=30)).isoformat()
+        recent_ts = (datetime.now(tz=timezone.utc) - timedelta(hours=2)).isoformat()
+        await _insert(db_path, region="Sudan", created_at_override=old_ts)
+        await _insert(db_path, region="Ukraine", created_at_override=recent_ts)
+        result = await store.get_most_recent_created_at(db_path)
+        assert result is not None
+        # Should be within a second of the recent timestamp
+        assert abs((result - datetime.fromisoformat(recent_ts)).total_seconds()) < 1
+
+    async def test_stale_when_older_than_24h(self, db_path: str) -> None:
+        old_ts = (datetime.now(tz=timezone.utc) - timedelta(hours=25)).isoformat()
+        await _insert(db_path, region="Gaza", created_at_override=old_ts)
+        result = await store.get_most_recent_created_at(db_path)
+        assert result is not None
+        age = (datetime.now(tz=timezone.utc) - result).total_seconds()
+        assert age > 86400
+
+    async def test_fresh_when_within_24h(self, db_path: str) -> None:
+        recent_ts = (datetime.now(tz=timezone.utc) - timedelta(hours=7)).isoformat()
+        await _insert(db_path, region="Gaza", created_at_override=recent_ts)
+        result = await store.get_most_recent_created_at(db_path)
+        assert result is not None
+        age = (datetime.now(tz=timezone.utc) - result).total_seconds()
+        assert age < 86400
+
+
+# ---------------------------------------------------------------------------
 # TestRefreshAllWatchZones
 # ---------------------------------------------------------------------------
 
